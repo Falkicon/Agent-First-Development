@@ -2,6 +2,26 @@
 
 A methodology and toolkit for building software where AI agents are first-class users.
 
+> **"The best UI is no UI."** — AFD makes this UX principle achievable.
+
+## Philosophy: UX Design for AI Collaborators
+
+AFD treats AI agents the way UX designers treat human users: as collaborators deserving thoughtful, friction-free experiences.
+
+Traditional apps are **opaque to AI**—capabilities locked behind visual interfaces, state hidden in UI components, features that only work through mouse clicks. An LLM with terminal access is like a brilliant engineer who can only interact through a keyhole.
+
+**AFD inverts this.** Commands ARE the application. The UI becomes optional—a view layer that can be swapped, simplified, or removed entirely as AI handles more of the "understanding intent" work.
+
+This enables:
+- **Fearless experimentation** — Change UI radically without touching business logic
+- **Future-proof architecture** — Same commands work for CLI, GUI, chat, voice, whatever comes next
+- **Human-AI collaboration** — Shared command language both can understand and verify
+- **Reductive design** — Systematically remove UI friction as AI capabilities grow
+
+📖 **[Read the full philosophy →](./docs/philosophy.md)**
+
+---
+
 ## The Problem
 
 Traditional software development treats agent/API access as an afterthought:
@@ -230,6 +250,7 @@ afd validate --category document
 
 | Guide | Description |
 |-------|-------------|
+| [Philosophy](./docs/philosophy.md) | **Why** AFD — UX design for AI collaborators |
 | [Command Schema Guide](./docs/command-schema-guide.md) | How to design commands that enable good agent UX |
 | [Trust Through Validation](./docs/trust-through-validation.md) | How CLI validation builds user trust |
 | [Implementation Phases](./docs/implementation-phases.md) | 4-phase roadmap for AFD projects |

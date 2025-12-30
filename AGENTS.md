@@ -15,6 +15,10 @@ Agent-First:  Commands → Validation → UI (surface)
 
 **"Agent" is like "Person"** - The underlying technology (MCP, function calling, etc.) will evolve, but the concept of an autonomous agent remains constant. AFD is technology-agnostic by design.
 
+**"The best UI is no UI"** - AFD applies UX design thinking to AI agents. Traditional apps are opaque to AI—capabilities locked behind visual interfaces. AFD inverts this: commands ARE the application, UI is just one possible surface. This enables fearless UI experimentation, future-proof architecture, and true human-AI collaboration.
+
+📖 See [docs/philosophy.md](./docs/philosophy.md) for the full vision.
+
 ## Key Principles
 
 1. **Command-First** - All functionality is exposed as commands/tools before any UI is built
@@ -28,6 +32,7 @@ Agent-First:  Commands → Validation → UI (surface)
 ```
 afd/
 ├── docs/
+│   ├── philosophy.md                # Why AFD: UX design for AI collaborators
 │   ├── command-schema-guide.md      # How to design commands for good UX
 │   ├── trust-through-validation.md  # Why CLI validation builds trust
 │   ├── implementation-phases.md     # 4-phase implementation roadmap
@@ -145,6 +150,7 @@ See [docs/command-schema-guide.md](./docs/command-schema-guide.md) for detailed 
 ## Related Resources
 
 - **MCP** - Model Context Protocol (current agent communication standard)
+- **[Philosophy](./docs/philosophy.md)** - Why AFD: UX design for AI collaborators
 - **[Command Schema Guide](./docs/command-schema-guide.md)** - Detailed command design patterns
 - **[Trust Through Validation](./docs/trust-through-validation.md)** - Why CLI validation matters
 - **[Implementation Phases](./docs/implementation-phases.md)** - 4-phase roadmap for AFD projects
