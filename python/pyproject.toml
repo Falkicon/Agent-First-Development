@@ -1,0 +1,89 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "afd"
+version = "0.1.0"
+description = "Agent-First Development toolkit for Python"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "Falkicon", email = "falkicon@example.com" }
+]
+keywords = [
+    "agent-first",
+    "afd",
+    "mcp",
+    "ai",
+    "agent",
+    "commands",
+    "cli",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+server = [
+    "fastmcp>=0.1.0",
+]
+cli = [
+    "click>=8.0",
+    "rich>=13.0",
+    "afd[server]",  # CLI needs transports
+]
+testing = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+all = [
+    "afd[server,cli,testing]",
+]
+dev = [
+    "afd[all]",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    "pytest-cov>=4.0",
+]
+
+[project.scripts]
+afd = "afd.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Falkicon/afd"
+Documentation = "https://github.com/Falkicon/afd/tree/main/python"
+Repository = "https://github.com/Falkicon/afd"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/afd"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

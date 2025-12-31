@@ -431,21 +431,25 @@
     }
 
     .confidence-bar {
-      width: 40px;
-      height: 4px;
-      background: var(--border);
-      border-radius: 2px;
+      display: inline-block;
+      width: 60px;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
       overflow: hidden;
+      vertical-align: middle;
     }
 
     .confidence-fill {
+      display: block;
       height: 100%;
-      background: var(--success);
+      background: #4ade80;
+      border-radius: 4px;
       transition: width 0.3s ease;
     }
 
-    .confidence-fill.medium { background: var(--warning); }
-    .confidence-fill.low { background: var(--error); }
+    .confidence-fill.medium { background: #fbbf24; }
+    .confidence-fill.low { background: #f87171; }
 
     .toast-suggestion {
       margin-top: 0.5rem;

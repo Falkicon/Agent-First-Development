@@ -122,13 +122,13 @@ interface CommandResult<T> {
   success: boolean;
   data?: T;
   error?: { code: string; message: string; suggestion?: string };
-  
+
   // Recommended for AI-powered commands
-  confidence?: number;      // 0-1, enables confidence indicators
-  reasoning?: string;       // Explains "why", enables transparency
-  sources?: Source[];       // Attribution for verification
-  plan?: PlanStep[];        // Multi-step visibility
-  alternatives?: Alternative<T>[];  // Other options considered
+  confidence?: number; // 0-1, enables confidence indicators
+  reasoning?: string; // Explains "why", enables transparency
+  sources?: Source[]; // Attribution for verification
+  plan?: PlanStep[]; // Multi-step visibility
+  alternatives?: Alternative<T>[]; // Other options considered
 }
 
 // Alternative type for consistency
@@ -140,12 +140,123 @@ interface Alternative<T> {
 ```
 
 **Why this matters**: These fields enable good agent UX:
+
 - `confidence` → User knows when to trust vs. verify
-- `reasoning` → User understands agent decisions  
+- `reasoning` → User understands agent decisions
 - `sources` → User can verify information
 - `plan` → User sees what will happen before it happens
 
 See [docs/command-schema-guide.md](./docs/command-schema-guide.md) for detailed patterns.
+
+## Lessons Learned (Real-World Implementation)
+
+These lessons come from implementing AFD in:
+
+- **[Violet Design](https://github.com/Falkicon/dsas)** — Hierarchical design token management (TypeScript, 24 commands)
+- **[Noisett](https://github.com/Falkicon/Noisett)** — AI image generation (Python, 19 commands, **5 surfaces**)
+
+### Multi-Surface Validation (Noisett)
+
+**Achievement**: Noisett serves the same 19 commands through **5 different surfaces**:
+
+| Surface      | Technology   | Backend Changes |
+| ------------ | ------------ | --------------- |
+| CLI          | Python Click | —               |
+| MCP          | FastMCP      | —               |
+| REST API     | FastAPI      | —               |
+| Web UI       | Vanilla JS   | —               |
+| Figma Plugin | TypeScript   | **Zero** ✅     |
+
+The Figma plugin (Phase 7) required **zero backend changes** — it calls the same `/api/generate` and `/api/jobs/{id}` endpoints. This validates AFD's core promise: commands are the app, surfaces are interchangeable.
+
+**Key Insight**: The "honesty check" (can it be done via CLI?) proved correct. Before building the Figma plugin, we verified the CLI could generate images. Since it could, adding another surface was trivial.
+
+### TypeScript + Zod Generics
+
+**Challenge**: `CommandDefinition<TSchema, TOutput>` typing with optional fields and defaults.
+
+**Problem**: Zod distinguishes between `z.input<>` (what you pass in) and `z.output<>` (after transforms/defaults applied). Optional fields with `.default()` exist in output but not necessarily in input.
+
+```typescript
+// ❌ Wrong - handler receives raw input, not parsed
+async handler(input: z.output<typeof InputSchema>) {
+  // input.priority might be undefined!
+}
+
+// ✅ Correct - parse inside handler to apply defaults
+async handler(rawInput: z.input<typeof InputSchema>) {
+  const input = InputSchema.parse(rawInput);
+  // input.priority is guaranteed to have default value
+}
+```
+
+### Zod Union Ordering Matters
+
+**Challenge**: Complex union schemas can match unexpectedly.
+
+**Problem**: A permissive object schema in a union can match and strip properties from objects that should fall through to later union members.
+
+```typescript
+// ❌ Wrong - platform schema matches any object, strips unknown props
+const TokenValueSchema = z.union([
+  z.string(),
+  z.object({ web: z.string().optional(), ios: z.string().optional() }),
+  z.record(z.string(), z.unknown()), // Never reached for objects
+]);
+
+// ✅ Correct - strict mode + refinement prevents over-matching
+const TokenValueSchema = z.union([
+  z.string(),
+  z
+    .object({ web: z.string().optional(), ios: z.string().optional() })
+    .strict()
+    .refine((obj) => obj.web || obj.ios, "Need at least one platform"),
+  z.record(z.string(), z.unknown()), // Now correctly catches other objects
+]);
+```
+
+### Registry Type Constraints
+
+**Challenge**: Generic command registry that stores different command types.
+
+**Problem**: TypeScript's variance rules make it hard to store `CommandDefinition<SpecificSchema, SpecificOutput>` in a `Map<string, CommandDefinition<any, any>>`.
+
+```typescript
+// ✅ Solution - use 'any' internally, cast at boundaries
+class CommandRegistry {
+  private commands = new Map<string, CommandDefinition<any, any>>();
+
+  register<TSchema extends z.ZodType, TOutput>(
+    command: CommandDefinition<TSchema, TOutput>
+  ) {
+    this.commands.set(command.name, command as CommandDefinition<any, any>);
+  }
+
+  async execute<TOutput>(
+    name: string,
+    input: unknown
+  ): Promise<CommandResult<TOutput>> {
+    const command = this.commands.get(name);
+    return command.handler(input) as CommandResult<TOutput>;
+  }
+}
+```
+
+### CLI-First Benefits
+
+The "honesty check" worked exactly as intended:
+
+- Bugs discovered via `violet node create --name test` before any UI existed
+- Schema issues surfaced during `pnpm test` cycles
+- 89 tests catch regressions before UI development starts
+
+### Key Takeaways
+
+1. **Parse inside handlers** - Don't trust TypeScript to know Zod has applied defaults
+2. **Order unions carefully** - Most specific schemas first, most permissive last
+3. **Use `.strict()` on objects** - Prevents silent property stripping
+4. **Test with complex data** - Object values, nested structures, edge cases
+5. **Type boundaries** - Use `any` internally, cast at API boundaries
 
 ## Related Resources
 
@@ -159,6 +270,7 @@ See [docs/command-schema-guide.md](./docs/command-schema-guide.md) for detailed 
 ## Contributing
 
 AI agents are encouraged to:
+
 1. Propose new commands via issues/PRs
 2. Improve command schemas for better agent usability
 3. Add examples showing AFD patterns
