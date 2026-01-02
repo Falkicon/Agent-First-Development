@@ -148,8 +148,60 @@ export type {
 	LoadFixtureOptions,
 	AppliedCommand,
 	ApplyFixtureResult,
+	ApplyFixtureOptions,
 } from './runner/fixture-loader.js';
 export { loadFixture, applyFixture } from './runner/fixture-loader.js';
+
+// ============================================================================
+// App Adapters (Phase 4)
+// ============================================================================
+
+// Adapter types
+export type {
+	AdapterContext,
+	AdapterRegistry,
+	AdapterRegistryOptions,
+	AppAdapter,
+	AppliedCommand as AdapterAppliedCommand,
+	ApplyFixtureResult as AdapterApplyFixtureResult,
+	CliConfig as AdapterCliConfig,
+	CommandHandler as AdapterCommandHandler,
+	CommandsConfig,
+	ErrorsConfig,
+	FixtureApplicator,
+	FixtureConfig as AdapterFixtureConfig,
+	FixtureResetter,
+	FixtureValidationResult,
+	FixtureValidator,
+	JobsConfig,
+} from './adapters/index.js';
+
+// Registry
+export {
+	createAdapterRegistry,
+	detectAdapter,
+	getAdapter,
+	getGlobalRegistry,
+	listAdapters,
+	registerAdapter,
+	resetGlobalRegistry,
+	setGlobalRegistry,
+} from './adapters/index.js';
+
+// Generic adapter
+export {
+	createGenericAdapter,
+	genericAdapter,
+	type GenericAdapterOptions,
+} from './adapters/index.js';
+
+// Todo adapter
+export {
+	createTodoAdapter,
+	todoAdapter,
+	type TodoFixture,
+	type TodoSeed,
+} from './adapters/index.js';
 
 // ============================================================================
 // Scenario Commands (Phase 2)

@@ -675,10 +675,11 @@ fixture:
 
 | Task              | Description                | Status      |
 | ----------------- | -------------------------- | ----------- |
-| Noisett adapter   | Fixture loader for Noisett | Not Started |
-| Violas adapter    | Fixture loader for Violas  | Not Started |
-| Generic adapter   | App-agnostic fallback      | Not Started |
-| Schema validation | Validate fixture format    | Not Started |
+| Adapter system    | AppAdapter interface       | ✅ Complete |
+| Registry          | register/get/detect        | ✅ Complete |
+| Generic adapter   | App-agnostic fallback      | ✅ Complete |
+| Todo adapter      | Adapter for todo example   | ✅ Complete |
+| Schema validation | Validate fixture format    | ✅ Complete |
 
 **Deliverable**: Reusable across AFD ecosystem.
 

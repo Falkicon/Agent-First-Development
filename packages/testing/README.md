@@ -119,6 +119,103 @@ for (const s of changed.data.suggestions) {
 }
 ```
 
+## App Adapters (Phase 4)
+
+Adapters enable the framework to work with different AFD applications.
+
+### Adapter Interface
+
+Each app provides an adapter implementing:
+
+```typescript
+interface AppAdapter {
+  name: string;          // e.g., 'todo', 'violet', 'noisett'
+  version: string;
+  cli: CliConfig;        // CLI command configuration
+  fixture: FixtureConfig; // How to apply/reset fixtures
+  commands: CommandsConfig; // Available commands
+  errors: ErrorsConfig;   // Known error codes
+  jobs: JobsConfig;       // User goals/jobs
+}
+```
+
+### Using the Registry
+
+```typescript
+import {
+  registerAdapter,
+  detectAdapter,
+  todoAdapter,
+  createGenericAdapter,
+} from '@afd/testing';
+
+// Register built-in adapter
+registerAdapter(todoAdapter);
+
+// Create and register custom adapter
+const myAdapter = createGenericAdapter('myapp', {
+  commands: ['myapp.create', 'myapp.list'],
+  errors: ['NOT_FOUND', 'VALIDATION_ERROR'],
+});
+registerAdapter(myAdapter);
+
+// Auto-detect adapter from fixture
+const fixture = { app: 'todo', todos: [] };
+const adapter = detectAdapter(fixture);
+console.log(adapter?.name); // 'todo'
+```
+
+### Built-in Adapters
+
+| Adapter | App | Description |
+|---------|-----|-------------|
+| `todoAdapter` | Todo | The AFD Todo example app |
+| `genericAdapter` | Generic | Fallback for unknown apps |
+
+### Creating a Custom Adapter
+
+```typescript
+import { createGenericAdapter, type AppAdapter } from '@afd/testing';
+
+// Simple approach: use factory
+const myAdapter = createGenericAdapter('myapp', {
+  version: '1.0.0',
+  cliCommand: 'myapp-cli',
+  commands: ['myapp.create', 'myapp.list', 'myapp.delete'],
+  errors: ['NOT_FOUND', 'INVALID_INPUT'],
+  jobs: ['manage-items', 'cleanup'],
+});
+
+// Advanced: full custom adapter
+const customAdapter: AppAdapter = {
+  name: 'custom',
+  version: '1.0.0',
+  cli: {
+    command: 'custom-cli',
+    inputFormat: 'json-arg',
+    outputFormat: 'json',
+  },
+  fixture: {
+    async apply(fixture, context) {
+      // Custom fixture application logic
+      return { appliedCommands: [] };
+    },
+    async reset(context) {
+      // Reset app state
+    },
+  },
+  commands: {
+    list: () => ['custom.create', 'custom.delete'],
+  },
+  errors: {
+    list: () => ['ERROR_ONE', 'ERROR_TWO'],
+  },
+  jobs: {
+    list: () => ['job-one'],
+  },
+};
+```
+
 ## Scenario Commands (Phase 2)
 
 Batch operations and management commands for JTBD scenarios.

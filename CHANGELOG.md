@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-01-01
+
+### Added
+
+#### JTBD Testing Phase 4: Multi-App Support (`@afd/testing`)
+
+- **App Adapter System** - Extensible adapter interface for different AFD applications
+  - `AppAdapter` interface with CLI, fixture, commands, errors, and jobs configuration
+  - `CliConfig` for CLI command configuration
+  - `FixtureConfig` with `apply()`, `reset()`, and `validate()` methods
+  - `CommandsConfig` with `list()`, `getSchema()`, and `mapFileToCommands()`
+  - `ErrorsConfig` with `list()`, `getDescription()`, and `isRetryable()`
+  - `JobsConfig` with `list()`, `getDescription()`, and `getRelatedCommands()`
+
+- **Adapter Registry** - Manage multiple app adapters
+  - `createAdapterRegistry()` - Create isolated registries
+  - `registerAdapter()` - Register adapters globally
+  - `getAdapter()` / `detectAdapter()` - Lookup by name or auto-detect from fixture
+  - `listAdapters()` - List all registered adapters
+  - Global registry with `getGlobalRegistry()`, `setGlobalRegistry()`, `resetGlobalRegistry()`
+
+- **Generic Adapter** - Fallback for apps without specific adapters
+  - `createGenericAdapter()` - Factory function with sensible defaults
+  - `genericAdapter` - Default instance
+  - Handles `data` and `setup` arrays in fixtures
+
+- **Todo Adapter** - Adapter for the AFD Todo example app
+  - `todoAdapter` - Pre-configured adapter for todo app
+  - `createTodoAdapter()` - Factory for customized instances
+  - Full support for 11 todo commands, error codes, and jobs
+  - `mapFileToCommands()` for changed-files scenario suggestions
+
+- **Fixture Loader Integration** - Updated to use adapters when available
+  - `applyFixture()` now accepts `ApplyFixtureOptions` with adapter override
+  - Auto-detects adapter from fixture's `app` field
+  - Falls back to legacy app-specific handling
+
+### Test Coverage
+
+| Package | Tests | Status |
+|---------|-------|--------|
+| @afd/core | 57 | ✅ Pass |
+| @afd/testing | 169 | ✅ Pass |
+| @afd/example-todo | 78 | ✅ Pass |
+| **Total** | 304 | ✅ Pass |
+
+---
+
 ## [0.5.0] - 2026-01-01
 
 ### Added

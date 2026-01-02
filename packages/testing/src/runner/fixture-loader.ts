@@ -237,24 +237,70 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // Fixture Application
 // ============================================================================
 
+import type { AppAdapter, AdapterContext } from "../adapters/types.js";
+import { detectAdapter } from "../adapters/registry.js";
+
+/**
+ * Options for applying a fixture.
+ */
+export interface ApplyFixtureOptions {
+  /** Specific adapter to use (overrides detection) */
+  adapter?: AppAdapter;
+  /** Working directory */
+  cwd?: string;
+  /** Environment variables */
+  env?: Record<string, string>;
+}
+
 /**
  * Apply fixture data to a system via commands.
  *
  * This function takes loaded fixture data and a command handler,
  * then executes the appropriate commands to set up initial state.
  *
+ * Supports:
+ * - Adapter-based application (if adapter registered)
+ * - Legacy app-specific handling (todo, violet)
+ * - Generic setup commands fallback
+ *
  * @param data - Loaded fixture data
  * @param handler - Command execution function
+ * @param options - Application options
  * @returns Result of fixture application
  */
 export async function applyFixture(
   data: FixtureData,
-  handler: (command: string, input?: Record<string, unknown>) => Promise<unknown>
+  handler: (command: string, input?: Record<string, unknown>) => Promise<unknown>,
+  options: ApplyFixtureOptions = {}
 ): Promise<ApplyFixtureResult> {
   const appliedCommands: AppliedCommand[] = [];
 
   try {
-    // Check for app-specific fixture format
+    // Try to use adapter if available
+    const adapter = options.adapter ?? detectAdapter(data);
+    
+    if (adapter) {
+      const context: AdapterContext = {
+        cli: adapter.cli.command,
+        handler: async (cmd, input) => {
+          const result = await handler(cmd, input);
+          return { success: true, data: result } as import("@afd/core").CommandResult<unknown>;
+        },
+        cwd: options.cwd,
+        env: options.env,
+      };
+      
+      const adapterResult = await adapter.fixture.apply(data, context);
+      return {
+        success: true,
+        appliedCommands: adapterResult.appliedCommands.map(cmd => ({
+          command: cmd.command,
+          input: cmd.input,
+        })),
+      };
+    }
+
+    // Fallback to legacy app-specific handling
     const app = data.app ?? "generic";
 
     switch (app) {
