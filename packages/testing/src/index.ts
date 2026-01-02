@@ -198,6 +198,52 @@ export type {
 } from './commands/create.js';
 export { scenarioCreate, listTemplates } from './commands/create.js';
 
+// scenario.suggest (Phase 3)
+export type {
+	SuggestionContext,
+	ScenarioSuggestInput,
+	ScenarioSuggestion,
+	ScenarioSuggestOutput,
+} from './commands/suggest.js';
+export { scenarioSuggest } from './commands/suggest.js';
+
+// ============================================================================
+// MCP Integration (Phase 3)
+// ============================================================================
+
+// MCP Server
+export {
+	createMcpTestingServer,
+	runStdioServer,
+	type McpTestingServer,
+	type McpTestingServerOptions,
+	type JsonRpcRequest,
+	type JsonRpcResponse,
+	type JsonRpcError,
+} from './mcp/server.js';
+
+// MCP Tools
+export {
+	generateTools,
+	createToolRegistry,
+	executeTool,
+	getTool,
+	type McpTool,
+	type RegisteredTool,
+	type ToolHandler,
+	type ToolExecutionContext,
+} from './mcp/tools.js';
+
+// Agent Hints
+export {
+	generateAgentHints,
+	generateTestReportHints,
+	generateCoverageHints,
+	enhanceWithAgentHints,
+	type AgentHints,
+	type AgentEnhancedResult,
+} from './mcp/hints.js';
+
 // ============================================================================
 // Re-export core types commonly used in testing
 // ============================================================================
