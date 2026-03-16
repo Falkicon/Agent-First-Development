@@ -2,6 +2,7 @@
  * @fileoverview MCP server type definitions and transport utilities.
  */
 
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type {
 	CommandContext,
 	CommandMiddleware,
@@ -132,6 +133,13 @@ export interface McpServerOptions {
 }
 
 /**
+ * Options for creating an embeddable Node HTTP handler without starting a server.
+ *
+ * Aligns with the HTTP-relevant subset of `McpServerOptions`.
+ */
+export type McpHandlerOptions = Omit<McpServerOptions, 'transport' | 'stdio'>;
+
+/**
  * Context configuration for tool scoping.
  */
 export interface ContextConfig {
@@ -149,6 +157,11 @@ export interface ContextConfig {
 }
 
 export type { CommandMiddleware } from '@lushly-dev/afd-core';
+
+/**
+ * Embeddable Node HTTP handler returned by `createMcpHandler()`.
+ */
+export type McpHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 
 /**
  * MCP Server instance.

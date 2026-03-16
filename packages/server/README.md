@@ -62,6 +62,29 @@ await server.start();
 console.log(`Server running at ${server.getUrl()}`);
 ```
 
+## Embedding In A Host-Controlled HTTP Server
+
+Use `createMcpHandler()` when your platform owns the HTTP server lifecycle and expects a request handler instead of a self-starting server object:
+
+```typescript
+import { createServer } from 'node:http';
+import { createMcpHandler } from '@lushly-dev/afd-server';
+
+const handler = createMcpHandler({
+  name: 'my-server',
+  version: '1.0.0',
+  commands: [greet],
+  host: '127.0.0.1',
+  port: 3100,
+});
+
+createServer((req, res) => {
+  void handler(req, res);
+}).listen(3100, '127.0.0.1');
+```
+
+Use `createMcpServer()` for the batteries-included standalone server. Use `createMcpHandler()` when you need AFD to plug into an existing Node HTTP host.
+
 ## Transport Protocols
 
 The server supports multiple transport protocols for different use cases:
