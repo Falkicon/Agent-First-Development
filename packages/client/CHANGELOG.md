@@ -2,6 +2,13 @@
 
 ## 1.0.0
 
+### Patch Changes
+
+- Updated dependencies []:
+  - @lushly-dev/afd-core@1.0.0
+
+## 1.0.0
+
 ### Minor Changes
 
 - ### Breaking Changes

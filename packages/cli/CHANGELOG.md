@@ -2,6 +2,15 @@
 
 ## 1.0.0
 
+### Patch Changes
+
+- Updated dependencies []:
+  - @lushly-dev/afd-client@1.0.0
+  - @lushly-dev/afd-core@1.0.0
+  - @lushly-dev/afd-testing@1.0.0
+
+## 1.0.0
+
 ### Minor Changes
 
 - ### Breaking Changes

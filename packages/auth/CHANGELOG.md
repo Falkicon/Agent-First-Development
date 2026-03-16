@@ -2,6 +2,14 @@
 
 ## 1.0.0
 
+### Patch Changes
+
+- Updated dependencies [[`b9eeeff`](https://github.com/lushly-dev/afd/commit/b9eeeff6502c922ea88ef7bc8a596025c13f7c95)]:
+  - @lushly-dev/afd-server@1.0.0
+  - @lushly-dev/afd-core@1.0.0
+
+## 1.0.0
+
 ### Minor Changes
 
 - ### Breaking Changes

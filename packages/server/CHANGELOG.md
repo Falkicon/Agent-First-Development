@@ -4,6 +4,17 @@
 
 ### Minor Changes
 
+- [#178](https://github.com/lushly-dev/afd/pull/178) [`b9eeeff`](https://github.com/lushly-dev/afd/commit/b9eeeff6502c922ea88ef7bc8a596025c13f7c95) Thanks [@Falkicon](https://github.com/Falkicon)! - Add `createMcpHandler()` for embedding AFD MCP HTTP endpoints in host-controlled Node servers without starting a listener via `createMcpServer()`.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @lushly-dev/afd-core@1.0.0
+
+## 1.0.0
+
+### Minor Changes
+
 - ### Breaking Changes
 
   - **Node.js 22+ required** — dropped Node 20 support, CI tests on 22.x and 24.x
