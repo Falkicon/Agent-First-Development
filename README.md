@@ -275,6 +275,7 @@ afd validate --category document
 |-------|-------------|
 | [Philosophy](./.claude/skills/afd-developer/references/philosophy.md) | **Why** AFD — UX design for AI collaborators |
 | [Command Schema Guide](./.claude/skills/afd/references/command-schema.md) | How to design commands that enable good agent UX |
+| [Optimistic Mutations](./.claude/skills/optimistic-mutations/SKILL.md) | How to use optimistic updates in interactive AFD clients without moving business logic out of commands |
 | [Trust Through Validation](./.claude/skills/afd-developer/references/trust-validation.md) | How CLI validation builds user trust |
 | [Implementation Phases](./.claude/skills/afd-developer/references/implementation-phases.md) | 4-phase roadmap for AFD projects |
 | [Production Considerations](./.claude/skills/afd-developer/references/production-considerations.md) | Security, mutation safety, and observability guidance |
