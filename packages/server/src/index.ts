@@ -137,8 +137,11 @@ export {
 } from './schema.js';
 export {
 	type ContextConfig,
+	createMcpHandler,
 	createMcpServer,
 	isStdinPiped,
+	type McpHandler,
+	type McpHandlerOptions,
 	type McpServer,
 	type McpServerOptions,
 	type McpTransport,

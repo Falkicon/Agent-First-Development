@@ -13,7 +13,7 @@ import { createContextState } from './bootstrap/afd-context.js';
 import { createExecutionEngine } from './execution.js';
 import { createHttpHandler } from './http-handler.js';
 import type { ZodCommandDefinition } from './schema.js';
-import type { McpServer, McpServerOptions } from './server-types.js';
+import type { McpHandler, McpHandlerOptions, McpServer, McpServerOptions } from './server-types.js';
 import { isStdinPiped } from './server-types.js';
 import { createToolRouter } from './tool-router.js';
 import { getToolsList } from './tools.js';
@@ -21,6 +21,8 @@ import { getToolsList } from './tools.js';
 export type {
 	CommandMiddleware,
 	ContextConfig,
+	McpHandler,
+	McpHandlerOptions,
 	McpServer,
 	McpServerOptions,
 	McpTransport,
@@ -31,6 +33,90 @@ export { isStdinPiped } from './server-types.js';
 // ═══════════════════════════════════════════════════════════════════════════════
 // SERVER FACTORY
 // ═══════════════════════════════════════════════════════════════════════════════
+
+function createSharedHttpRuntime(options: McpHandlerOptions) {
+	const {
+		name,
+		version,
+		commands,
+		port = 3100,
+		host = 'localhost',
+		devMode = false,
+		cors = devMode,
+		middleware = [],
+		onCommand,
+		onError,
+		toolStrategy = 'grouped',
+		groupByFn,
+		contexts,
+	} = options;
+
+	const contextState = contexts?.length ? createContextState() : undefined;
+
+	const commandMap = new Map<string, ZodCommandDefinition>();
+	for (const cmd of commands) {
+		commandMap.set(cmd.name, cmd);
+	}
+
+	const engine = createExecutionEngine({
+		commandMap,
+		middleware,
+		devMode,
+		onCommand,
+		onError,
+	});
+
+	const exposedCommandNames = new Set(commands.map((c) => c.name));
+
+	const routeToolCall = createToolRouter({
+		executeCommand: engine.executeCommand,
+		executeBatch: engine.executeBatch,
+		executePipeline: engine.executePipeline,
+		commands,
+		toolStrategy,
+		groupByFn,
+		devMode,
+		allCommands: commands,
+		exposedCommandNames,
+		contextState,
+	});
+
+	const boundGetToolsList = () =>
+		getToolsList(commands, toolStrategy, groupByFn, contextState?.getActive());
+
+	const { handler } = createHttpHandler({
+		name,
+		version,
+		host,
+		port,
+		cors,
+		devMode,
+		getToolsList: boundGetToolsList,
+		routeToolCall,
+		executeCommand: engine.executeCommand,
+		executeBatch: engine.executeBatch,
+		executeStream: engine.executeStream,
+	});
+
+	return {
+		engine,
+		routeToolCall,
+		getToolsList: boundGetToolsList,
+		handler,
+		url: `http://${host}:${port}`,
+	};
+}
+
+/**
+ * Create an embeddable Node HTTP handler for MCP endpoints.
+ *
+ * Unlike `createMcpServer()`, this does not create or start an HTTP server.
+ * The caller owns the server lifecycle and can attach the returned handler to
+ * any Node HTTP host that accepts `(req, res) => Promise<void>`.
+ */
+export function createMcpHandler(options: McpHandlerOptions): McpHandler {
+	return createSharedHttpRuntime(options).handler;
+}
 
 /**
  * Create an MCP server from Zod-defined commands.
@@ -68,10 +154,6 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 		contexts,
 	} = options;
 
-	// ── Context state (when contexts are configured) ─────────────────────────
-
-	const contextState = contexts?.length ? createContextState() : undefined;
-
 	// ── Transport resolution ────────────────────────────────────────────────
 
 	function resolveTransport(): 'stdio' | 'http' {
@@ -88,40 +170,23 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 	const useStdio = resolvedTransport === 'stdio';
 	const useHttp = resolvedTransport === 'http';
 
-	// ── Command map ─────────────────────────────────────────────────────────
+	// ── Shared execution/runtime wiring ─────────────────────────────────────
 
-	const commandMap = new Map<string, ZodCommandDefinition>();
-	for (const cmd of commands) {
-		commandMap.set(cmd.name, cmd);
-	}
-
-	// ── Wire up execution, routing, and tools ───────────────────────────────
-
-	const engine = createExecutionEngine({
-		commandMap,
-		middleware,
+	const sharedRuntime = createSharedHttpRuntime({
+		name,
+		version,
+		commands,
+		port,
+		host,
 		devMode,
+		cors,
+		middleware,
 		onCommand,
 		onError,
-	});
-
-	const exposedCommandNames = new Set(commands.map((c) => c.name));
-
-	const routeToolCall = createToolRouter({
-		executeCommand: engine.executeCommand,
-		executeBatch: engine.executeBatch,
-		executePipeline: engine.executePipeline,
-		commands,
 		toolStrategy,
 		groupByFn,
-		devMode,
-		allCommands: commands,
-		exposedCommandNames,
-		contextState,
+		contexts,
 	});
-
-	const boundGetToolsList = () =>
-		getToolsList(commands, toolStrategy, groupByFn, contextState?.getActive());
 
 	// ── Server state ────────────────────────────────────────────────────────
 
@@ -140,12 +205,17 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 				mcpSdkServer = new McpSdkServer({ name, version }, { capabilities: { tools: {} } });
 
 				mcpSdkServer.setRequestHandler(ListToolsRequestSchema, async () => ({
-					tools: boundGetToolsList(),
+					tools: sharedRuntime.getToolsList(),
 				}));
 
 				mcpSdkServer.setRequestHandler(CallToolRequestSchema, async (request) => {
 					// Spread into anonymous object for MCP SDK index signature compatibility
-					return { ...(await routeToolCall(request.params.name, request.params.arguments ?? {})) };
+					return {
+						...(await sharedRuntime.routeToolCall(
+							request.params.name,
+							request.params.arguments ?? {}
+						)),
+					};
 				});
 
 				const stdioTransport = new StdioServerTransport();
@@ -157,21 +227,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 
 			// HTTP transport
 			if (useHttp) {
-				const { handler } = createHttpHandler({
-					name,
-					version,
-					host,
-					port,
-					cors,
-					devMode,
-					getToolsList: boundGetToolsList,
-					routeToolCall,
-					executeCommand: engine.executeCommand,
-					executeBatch: engine.executeBatch,
-					executeStream: engine.executeStream,
-				});
-
-				httpServer = createServer(handler);
+				httpServer = createServer(sharedRuntime.handler);
 
 				await new Promise<void>((resolve, reject) => {
 					httpServer?.on('error', reject);
@@ -205,7 +261,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 		},
 
 		getUrl() {
-			return useHttp ? `http://${host}:${port}` : 'stdio://';
+			return useHttp ? sharedRuntime.url : 'stdio://';
 		},
 
 		getCommands() {
@@ -216,7 +272,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 			return resolvedTransport;
 		},
 
-		execute: engine.executeCommand,
-		executePipeline: engine.executePipeline,
+		execute: sharedRuntime.engine.executeCommand,
+		executePipeline: sharedRuntime.engine.executePipeline,
 	};
 }
