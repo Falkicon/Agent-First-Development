@@ -16,11 +16,31 @@ const server = createMcpServer({
   commands: allCommands,
 });
 
-const PORT = process.env.PORT ?? 3100;
-server.listen(PORT, () => {
-  console.log(`MCP server running at http://localhost:${PORT}`);
-});
+await server.start();
+console.log(`MCP server running at ${server.getUrl()}`);
 ```
+
+### Embeddable Node Handler
+
+```typescript
+import { createServer } from 'node:http';
+import { createMcpHandler } from '@lushly-dev/afd-server';
+import { allCommands } from './commands/index.js';
+
+const handler = createMcpHandler({
+  name: 'my-app',
+  version: '1.0.0',
+  commands: allCommands,
+  host: '127.0.0.1',
+  port: 3100,
+});
+
+createServer((req, res) => {
+  void handler(req, res);
+}).listen(3100, '127.0.0.1');
+```
+
+Use `createMcpServer()` when AFD should own the server lifecycle. Use `createMcpHandler()` when your Node host or platform owns the HTTP server lifecycle and needs an embeddable handler.
 
 ### With Middleware
 
@@ -55,6 +75,9 @@ The server exposes these endpoints:
 | `/health` | GET | Health check |
 | `/sse` | GET | Server-Sent Events connection |
 | `/message` | POST | MCP JSON-RPC requests |
+| `/rpc` | POST | Simple JSON-RPC for browser clients |
+| `/batch` | POST | Batch command execution |
+| `/stream/:command` | GET | SSE streaming command execution |
 
 ## Client Setup
 

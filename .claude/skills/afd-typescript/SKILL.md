@@ -3,11 +3,12 @@ name: afd-typescript
 description: >
   TypeScript implementation patterns for AFD commands using Zod schemas,
   @lushly-dev/afd-server, and @lushly-dev/afd-core. Covers command definition, schema design,
-  error handling, MCP server setup, and testing. Use when: implementing
+  error handling, MCP server setup, embeddable Node handlers, and testing. Use when: implementing
   commands in TypeScript, setting up MCP servers, writing Zod schemas,
   or debugging TypeScript AFD code.
   Triggers: typescript afd, ts command, zod schema, defineCommand,
-  @lushly-dev/afd-server, @lushly-dev/afd-core, typescript implementation.
+  createMcpServer, createMcpHandler, @lushly-dev/afd-server, @lushly-dev/afd-core,
+  typescript implementation.
 ---
 
 # AFD TypeScript Implementation
@@ -21,7 +22,13 @@ Patterns for implementing AFD commands in TypeScript.
 import type { CommandResult, CommandError } from '@lushly-dev/afd-core';
 
 // Server utilities
-import { defineCommand, success, error, createMcpServer } from '@lushly-dev/afd-server';
+import {
+  defineCommand,
+  success,
+  error,
+  createMcpServer,
+  createMcpHandler,
+} from '@lushly-dev/afd-server';
 
 // Schema validation
 import { z } from 'zod';
@@ -261,11 +268,33 @@ const server = createMcpServer({
   commands: allCommands,
 });
 
-const PORT = process.env.PORT ?? 3100;
-server.listen(PORT, () => {
-  console.log(`MCP server running at http://localhost:${PORT}`);
-});
+await server.start();
+console.log(`MCP server running at ${server.getUrl()}`);
 ```
+
+### Embeddable Node Handler
+
+Use `createMcpHandler()` when a framework or platform owns the HTTP server lifecycle and expects a Node request handler:
+
+```typescript
+import { createServer } from 'node:http';
+import { createMcpHandler } from '@lushly-dev/afd-server';
+import { allCommands } from './commands/index.js';
+
+const handler = createMcpHandler({
+  name: 'my-app',
+  version: '1.0.0',
+  commands: allCommands,
+  host: '127.0.0.1',
+  port: 3100,
+});
+
+createServer((req, res) => {
+  void handler(req, res);
+}).listen(3100, '127.0.0.1');
+```
+
+Use `createMcpServer()` for the batteries-included standalone server. Use `createMcpHandler()` when you need AFD to plug into an existing Node HTTP host.
 
 ### Lazy Strategy (Large Command Sets)
 

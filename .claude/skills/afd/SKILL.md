@@ -35,7 +35,7 @@ Expert guidance for building software with the Agent-First Development methodolo
 |--------------|----------------|
 | Command schemas, Zod patterns | [references/command-design.md](references/command-design.md) |
 | CommandResult interface, UX fields, batch patterns | [references/command-schema.md](references/command-schema.md) |
-| MCP server setup, transports | [references/mcp-integration.md](references/mcp-integration.md) |
+| MCP server setup, transports, embeddable Node handler | [references/mcp-integration.md](references/mcp-integration.md) |
 | Testing commands, performance | [references/testing.md](references/testing.md) |
 | CLI usage, validation workflow | [references/cli-validation.md](references/cli-validation.md) |
 | Command tags, bootstrap tools, tool strategies | [references/command-taxonomy.md](references/command-taxonomy.md) |
@@ -121,7 +121,8 @@ return error('NOT_FOUND', `Item ${id} not found`, {
 | Error response | `error(code, message, { suggestion })` |
 | Test via CLI | `afd call <command> '<json>'` |
 | List commands | `afd tools` |
-| Create MCP server | `createMcpServer({ commands }).listen(port)` |
+| Create standalone MCP server | `const server = createMcpServer({ commands }); await server.start()` |
+| Embed MCP into existing Node host | `const handler = createMcpHandler({ commands })` |
 
 ## Development Workflow
 

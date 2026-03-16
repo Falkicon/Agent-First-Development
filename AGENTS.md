@@ -28,7 +28,7 @@ AFD (Agent-First Development) — AI agents are first-class users. All functiona
 ```
 packages/
 ├── core/       # @lushly-dev/afd-core — Foundational types (CommandResult, CommandError, CommandDefinition)
-├── server/     # @lushly-dev/afd-server — MCP server factory (defineCommand, createMcpServer)
+├── server/     # @lushly-dev/afd-server — MCP server factory (defineCommand, createMcpServer, createMcpHandler)
 ├── client/     # @lushly-dev/afd-client — MCP client + DirectClient
 ├── auth/       # @lushly-dev/afd-auth — Provider-agnostic auth adapter
 ├── cli/        # @lushly-dev/afd-cli — Command-line tool
@@ -78,7 +78,7 @@ alfred/  # Quality bot — lint, parity, quality (see alfred/AGENTS.md)
 | [afd](skills/afd/) | Core AFD patterns, command design, workflow |
 | [afd-developer](skills/afd-developer/) | AFD philosophy, honesty check, define-validate-surface |
 | [afd-python](skills/afd-python/) | Python implementation with Pydantic, FastMCP |
-| [afd-typescript](skills/afd-typescript/) | TypeScript patterns, Zod schemas, defineCommand, createMcpServer |
+| [afd-typescript](skills/afd-typescript/) | TypeScript patterns, Zod schemas, defineCommand, createMcpServer, createMcpHandler |
 | [afd-rust](skills/afd-rust/) | Rust implementation patterns |
 | [afd-auth](skills/afd-auth/) | Auth adapter, middleware, commands, session sync, React hooks |
 | [afd-directclient](skills/afd-directclient/) | DirectClient, pipe() pipelines, pipeline variable resolution |
