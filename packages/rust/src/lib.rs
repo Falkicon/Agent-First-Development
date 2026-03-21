@@ -38,12 +38,14 @@
 pub mod batch;
 pub mod bootstrap;
 pub mod commands;
+pub mod connectors;
 pub mod errors;
 pub mod handoff;
 pub mod mcp;
 pub mod metadata;
 pub mod pipeline;
 pub mod result;
+pub mod similarity;
 pub mod streaming;
 pub mod telemetry;
 
@@ -83,6 +85,15 @@ pub use commands::{
     CommandContext, CommandDefinition, CommandExample, CommandHandler, CommandMiddleware,
     CommandParameter, CommandRegistry, ExecutionTime, ExposeOptions, JsonSchema, JsonSchemaType,
     McpInputSchema, McpTool,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: Connector types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use connectors::{
+    GitHubConnectorOptions, Issue, IssueCreateOptions, IssueFilters, PackageManager,
+    PackageManagerConnectorOptions, PrCreateOptions, PullRequest,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -127,11 +138,16 @@ pub use streaming::{
 pub use pipeline::{
     aggregate_pipeline_alternatives, aggregate_pipeline_confidence, aggregate_pipeline_reasoning,
     aggregate_pipeline_sources, aggregate_pipeline_warnings, build_confidence_breakdown,
-    create_pipeline, evaluate_condition, get_nested_value, is_pipeline_request, is_pipeline_result,
-    is_pipeline_step, resolve_variable, resolve_variables, PipelineAlternative, PipelineCondition,
-    PipelineContext, PipelineMetadata, PipelineOptions, PipelineRequest, PipelineResult,
-    PipelineSource, PipelineStep, PipelineWarning, StepConfidence, StepMetadata, StepReasoning,
-    StepResult, StepStatus,
+    create_pipeline, evaluate_condition, execute_pipeline, get_nested_value, is_and_condition,
+    is_eq_condition, is_exists_condition, is_gt_condition, is_gte_condition, is_lt_condition,
+    is_lte_condition, is_ne_condition, is_not_condition, is_or_condition, is_pipeline_condition,
+    is_pipeline_request, is_pipeline_result, is_pipeline_step, resolve_reference, resolve_variable,
+    resolve_variables, CommandExecutor, PipelineAlternative, PipelineCondition,
+    PipelineConditionAnd, PipelineConditionEq, PipelineConditionExists, PipelineConditionGt,
+    PipelineConditionGte, PipelineConditionLt, PipelineConditionLte, PipelineConditionNe,
+    PipelineConditionNot, PipelineConditionOr, PipelineContext, PipelineMetadata, PipelineOptions,
+    PipelineRequest, PipelineResult, PipelineSource, PipelineStep, PipelineWarning, StepConfidence,
+    StepMetadata, StepReasoning, StepResult, StepStatus,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -160,6 +176,12 @@ pub use handoff::{
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub use telemetry::{create_telemetry_event, is_telemetry_event, TelemetryEvent, TelemetrySink};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: Similarity helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use similarity::{calculate_similarity, find_similar_tools};
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
