@@ -56,7 +56,6 @@ pub struct CommandResult<T> {
     // ═══════════════════════════════════════════════════════════════════════════
     // CORE FIELDS (Required for all commands)
     // ═══════════════════════════════════════════════════════════════════════════
-
     /// Whether the command executed successfully.
     ///
     /// - `true`: Command completed without errors, `data` contains the result
@@ -76,7 +75,6 @@ pub struct CommandResult<T> {
     // ═══════════════════════════════════════════════════════════════════════════
     // UX-ENABLING FIELDS (Recommended for good agent experiences)
     // ═══════════════════════════════════════════════════════════════════════════
-
     /// Agent's confidence in this result (0-1).
     ///
     /// Guidelines:
@@ -276,6 +274,18 @@ pub fn failure_with<T>(error: CommandError, options: FailureOptions) -> CommandR
     }
 }
 
+/// Create a failed command result from a code and message.
+pub fn error<T>(code: &str, message: &str, suggestion: Option<&str>) -> CommandResult<T> {
+    failure(CommandError {
+        code: code.to_string(),
+        message: message.to_string(),
+        suggestion: suggestion.map(ToString::to_string),
+        retryable: None,
+        details: None,
+        cause: None,
+    })
+}
+
 /// Options for creating failure results.
 #[derive(Debug, Clone, Default)]
 pub struct FailureOptions {
@@ -352,11 +362,11 @@ mod tests {
     fn test_json_serialization() {
         let result = success("hello".to_string());
         let json = serde_json::to_string(&result).unwrap();
-        
+
         // Verify camelCase serialization
         assert!(json.contains("\"success\":true"));
         assert!(json.contains("\"data\":\"hello\""));
-        
+
         // Verify None fields are omitted
         assert!(!json.contains("\"error\""));
         assert!(!json.contains("\"confidence\""));
@@ -370,8 +380,19 @@ mod tests {
             ..Default::default()
         };
         let result = success_with("data".to_string(), opts);
-        
+
         assert_eq!(result.confidence, Some(0.95));
         assert_eq!(result.reasoning, Some("Test reasoning".to_string()));
+    }
+
+    #[test]
+    fn test_error_helper() {
+        let result: CommandResult<()> = error("BAD_INPUT", "Input was invalid", Some("Try again"));
+        assert!(!result.success);
+        assert_eq!(result.error.as_ref().unwrap().code, "BAD_INPUT");
+        assert_eq!(
+            result.error.as_ref().unwrap().suggestion,
+            Some("Try again".to_string())
+        );
     }
 }

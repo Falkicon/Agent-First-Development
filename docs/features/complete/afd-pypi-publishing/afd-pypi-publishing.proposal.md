@@ -1,8 +1,12 @@
 # AFD Python Package - PyPI Publishing
 
-Status: Proposed  
+Status: Complete  
 Created: 2026-01-13  
-Updated: 2026-02-24
+Updated: 2026-03-20
+
+## Outcome
+
+Completed. The Python package is published as `afd`, the repo contains a dedicated PyPI publish workflow in `.github/workflows/publish-python.yml`, and the Python README documents `pip install afd`.
 
 ## Summary
 
@@ -28,7 +32,7 @@ Out of scope:
 - The package MUST build reproducibly from `python/` using standard Python build tooling.
 - The package MUST publish to PyPI under an approved name.
 - The package MUST include typing metadata and pass import smoke tests after install.
-- Release workflow SHOULD support token-based publish in CI.
+- Release workflow SHOULD support non-interactive CI publish via PyPI trusted publishing.
 - Documentation SHOULD include installation and version pinning guidance.
 
 ## Architecture / Dataflow
@@ -43,14 +47,14 @@ Out of scope:
 - Name unavailable on PyPI: choose fallback package name and document mapping.
 - Publish failure after build: keep artifacts, do not retag release, retry publish only.
 - Broken release detected post-publish: yank the release and publish patch increment.
-- Credential leakage risk: use API token only via CI secrets; never commit credentials.
+- Credential leakage risk: use PyPI trusted publishing where possible; never commit credentials.
 
 ## Acceptance Criteria
 
 - Package install succeeds in a fresh virtual environment via `pip install`.
 - Core imports succeed (`CommandResult`, server bootstrap utilities).
 - Version in package metadata matches release notes.
-- Publish can be run non-interactively in CI with token auth.
+- Publish can be run non-interactively in CI via trusted publishing.
 - README contains install, upgrade, and troubleshooting sections.
 
 ## Task Breakdown

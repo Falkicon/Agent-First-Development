@@ -34,7 +34,8 @@ use afd::{
 // Command types
 use afd::{
     CommandDefinition, CommandParameter, CommandContext,
-    CommandHandler, CommandRegistry,
+    CommandExample, CommandHandler, CommandRegistry,
+    ExposeOptions, default_expose, validate_command_name,
     JsonSchema, JsonSchemaType,
 };
 
@@ -47,7 +48,16 @@ use afd::{
 // Batch and streaming
 use afd::{
     BatchRequest, BatchResult, BatchCommand,
-    StreamChunk, create_progress_chunk, create_data_chunk,
+    StreamChunk, StreamableCommand,
+    create_progress_chunk, create_data_chunk,
+    create_complete_chunk, create_error_chunk,
+};
+
+// Additional parity helpers
+use afd::{
+    create_handoff, create_mcp_request, create_mcp_response,
+    create_telemetry_event, execute_pipeline,
+    calculate_similarity, find_similar_tools,
 };
 ```
 
@@ -109,8 +119,7 @@ fn create_user(email: &str) -> CommandResult<User> {
         return failure(CommandError::new(
             "CONFLICT",
             format!("Email '{}' already registered", email),
-            Some("Use user-login instead, or reset password"),
-        ));
+        ).with_suggestion("Use user-login instead, or reset password"));
     }
     // ... create user
 }
@@ -150,8 +159,7 @@ let err = CommandError::internal("Database connection failed");
 let err = CommandError::new(
     "RATE_LIMITED",
     "Too many requests",
-    Some("Wait 60 seconds before retrying"),
-);
+).with_suggestion("Wait 60 seconds before retrying");
 
 // With retryable flag
 let err = CommandError {
@@ -170,7 +178,9 @@ let err = CommandError {
 
 ```rust
 use async_trait::async_trait;
-use afd::{CommandHandler, CommandContext, CommandResult, success};
+use std::sync::Arc;
+
+use afd::{CommandContext, CommandError, CommandHandler, CommandResult, failure, success};
 use serde_json::Value;
 
 struct CreateTodoHandler {
@@ -184,9 +194,11 @@ impl CommandHandler for CreateTodoHandler {
         input: Value,
         _context: CommandContext,
     ) -> CommandResult<Value> {
-        // Parse input
-        let title = input["title"].as_str()
-            .ok_or_else(|| CommandError::validation("title is required", None))?;
+        // Parse input at the command boundary and return a CommandResult on failure.
+        let title = match input.get("title").and_then(|value| value.as_str()) {
+            Some(title) => title,
+            None => return failure(CommandError::validation("title is required", None)),
+        };
 
         // Execute logic
         let todo = self.store.create(title).await;
@@ -256,15 +268,17 @@ let param = CommandParameter::required_string("priority", "Priority level")
 ## Command Registry
 
 ```rust
-use afd::{CommandRegistry, CommandDefinition};
+use afd::{CommandDefinition, CommandRegistry, validate_command_name};
 
 // Create registry
 let mut registry = CommandRegistry::new();
 
 // Register commands
-registry.register(create_todo_cmd)?;
-registry.register(list_todos_cmd)?;
-registry.register(get_todo_cmd)?;
+registry.register(create_todo_cmd).expect("valid command definition");
+registry.register(list_todos_cmd).expect("valid command definition");
+registry.register(get_todo_cmd).expect("valid command definition");
+
+validate_command_name("todo-create").expect("valid command name");
 
 // Check if command exists
 if registry.has("todo-create") {
@@ -292,21 +306,15 @@ use afd::{BatchRequest, BatchCommand, BatchOptions};
 // Create batch request
 let request = BatchRequest {
     commands: vec![
-        BatchCommand {
-            id: Some("1".to_string()),
-            command: "todo-create".to_string(),
-            input: serde_json::json!({"title": "First"}),
-        },
-        BatchCommand {
-            id: Some("2".to_string()),
-            command: "todo-create".to_string(),
-            input: serde_json::json!({"title": "Second"}),
-        },
+        BatchCommand::new("1", "todo-create", serde_json::json!({"title": "First"})),
+        BatchCommand::new("2", "todo-create", serde_json::json!({"title": "Second"})),
     ],
     options: BatchOptions {
         continue_on_error: true,
-        max_concurrent: Some(4),
+        max_concurrency: Some(4),
+        ..Default::default()
     },
+    context: None,
 };
 
 // Execute batch
@@ -323,6 +331,7 @@ use afd::{
     StreamChunk, create_progress_chunk, create_data_chunk,
     create_complete_chunk, create_error_chunk,
 };
+use afd::CommandError;
 
 // Progress update
 let progress = create_progress_chunk(50.0, "Processing items...");
@@ -334,26 +343,36 @@ let data = create_data_chunk(partial_result, false);
 let final_data = create_data_chunk(complete_result, true);
 
 // Completion
-let complete = create_complete_chunk(final_result);
+let complete = create_complete_chunk(final_result, Some(1500));
 
 // Error during streaming
-let error = create_error_chunk(CommandError::internal("Stream interrupted"));
+let error = create_error_chunk(CommandError::internal("Stream interrupted"), false);
 ```
 
 ## Metadata Types
+
+## Current Parity Note
+
+The Rust crate now includes parity helpers for:
+
+- command ergonomics: `CommandExample`, `ExposeOptions`, `default_expose`, `validate_command_name`
+- streaming: `StreamableCommand`, `consume_stream`, `create_timeout_controller`
+- handoff and telemetry: `create_handoff`, `default_reconnect_policy`, `TelemetryEvent`
+- MCP and pipelines: `create_mcp_request`, `create_mcp_response`, `execute_pipeline`
+- discovery helpers: `calculate_similarity`, `find_similar_tools`
 
 ### Warnings
 
 ```rust
 use afd::{Warning, WarningSeverity, create_warning};
 
-let warning = create_warning("DEPRECATION", "This field is deprecated");
+let warning = create_warning("DEPRECATION", "This field is deprecated", None);
 
 let warning = Warning {
     code: "PERMANENT".to_string(),
     message: "This action cannot be undone".to_string(),
     severity: Some(WarningSeverity::High),
-    field: None,
+    context: None,
 };
 ```
 
@@ -362,13 +381,15 @@ let warning = Warning {
 ```rust
 use afd::{Source, SourceType, create_source};
 
-let source = create_source("API Response", SourceType::Api);
+let source = create_source("API Response", SourceType::Api, None);
 
 let source = Source {
     name: "User Database".to_string(),
     source_type: SourceType::Database,
     url: Some("postgres://...".to_string()),
-    confidence: Some(0.99),
+    accessed_at: None,
+    relevance: Some(0.99),
+    snippet: None,
 };
 ```
 
@@ -377,11 +398,11 @@ let source = Source {
 ```rust
 use afd::{PlanStep, PlanStepStatus, create_step, update_step_status};
 
-let step = create_step(1, "Validate input");
+let step = create_step(1, "Validate input", PlanStepStatus::Pending);
 
 let mut step = PlanStep::new(1, "Process data");
-step = update_step_status(step, PlanStepStatus::InProgress);
-step = update_step_status(step, PlanStepStatus::Completed);
+update_step_status(&mut step, PlanStepStatus::Running, None, None);
+update_step_status(&mut step, PlanStepStatus::Completed, Some(120), None);
 ```
 
 ## JSON Serialization
@@ -412,13 +433,26 @@ fn process_result<T>(result: &CommandResult<T>) {
 
 ## Error Handling Patterns
 
-### Using Result with ?
+### Using Result Internally
+
+Use `Result<T, CommandError>` inside helpers, then convert to `CommandResult<T>` at the command boundary.
 
 ```rust
+use afd::{failure, success_with, CommandError, CommandResult, ResultOptions};
+use serde_json::Value;
+
+fn parse_title(input: &Value) -> Result<&str, CommandError> {
+    input
+        .get("title")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| CommandError::validation("title is required", None))
+}
+
 async fn create_todo(input: Value, store: &TodoStore) -> CommandResult<Todo> {
-    // Parse required field
-    let title = input["title"].as_str()
-        .ok_or_else(|| CommandError::validation("title is required", None))?;
+    let title = match parse_title(&input) {
+        Ok(title) => title,
+        Err(error) => return failure(error),
+    };
 
     // Validate
     if title.is_empty() {
@@ -429,8 +463,10 @@ async fn create_todo(input: Value, store: &TodoStore) -> CommandResult<Todo> {
     }
 
     // Execute with error conversion
-    let todo = store.create(title).await
-        .map_err(|e| CommandError::internal(&e.to_string()))?;
+    let todo = match store.create(title).await {
+        Ok(todo) => todo,
+        Err(error) => return failure(CommandError::internal(&error.to_string())),
+    };
 
     success_with(todo, ResultOptions {
         reasoning: Some(format!("Created todo '{}'", title)),
@@ -442,15 +478,23 @@ async fn create_todo(input: Value, store: &TodoStore) -> CommandResult<Todo> {
 ### Wrapping External Errors
 
 ```rust
+use afd::{failure, success, CommandError, CommandResult};
+
 impl From<sqlx::Error> for CommandError {
     fn from(err: sqlx::Error) -> Self {
         CommandError::internal(&format!("Database error: {}", err))
     }
 }
 
+async fn load_user(id: &str) -> Result<User, CommandError> {
+    db.get_user(id).await.map_err(CommandError::from)
+}
+
 async fn get_user(id: &str) -> CommandResult<User> {
-    let user = db.get_user(id).await?;  // Converts sqlx::Error
-    success(user)
+    match load_user(id).await {
+        Ok(user) => success(user),
+        Err(error) => failure(error),
+    }
 }
 ```
 

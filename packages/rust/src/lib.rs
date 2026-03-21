@@ -38,19 +38,23 @@
 pub mod batch;
 pub mod bootstrap;
 pub mod commands;
+pub mod connectors;
 pub mod errors;
 pub mod handoff;
+pub mod mcp;
 pub mod metadata;
 pub mod pipeline;
 pub mod result;
+pub mod similarity;
 pub mod streaming;
+pub mod telemetry;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // RE-EXPORTS: Result types
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub use result::{
-    failure, failure_with, is_failure, is_success, success, success_with, CommandResult,
+    error, failure, failure_with, is_failure, is_success, success, success_with, CommandResult,
     FailureOptions, ResultMetadata, ResultOptions,
 };
 
@@ -60,7 +64,7 @@ pub use result::{
 
 pub use errors::{
     create_error, error_codes, internal_error, is_command_error, not_found_error, rate_limit_error,
-    timeout_error, validation_error, CommandError,
+    timeout_error, validation_error, wrap_error, CommandError, ErrorCode,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -77,9 +81,31 @@ pub use metadata::{
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub use commands::{
-    command_to_mcp_tool, create_command_registry, CommandContext, CommandDefinition,
-    CommandHandler, CommandParameter, CommandRegistry, ExecutionTime, JsonSchema, JsonSchemaType,
+    command_to_mcp_tool, create_command_registry, default_expose, validate_command_name,
+    CommandContext, CommandDefinition, CommandExample, CommandHandler, CommandMiddleware,
+    CommandParameter, CommandRegistry, ExecutionTime, ExposeOptions, JsonSchema, JsonSchemaType,
     McpInputSchema, McpTool,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: Connector types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use connectors::{
+    GitHubConnectorOptions, Issue, IssueCreateOptions, IssueFilters, PackageManager,
+    PackageManagerConnectorOptions, PrCreateOptions, PullRequest,
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: MCP types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use mcp::{
+    create_mcp_error_response, create_mcp_request, create_mcp_response, is_mcp_notification,
+    is_mcp_request, is_mcp_response, text_content, McpClientCapabilities, McpContent, McpError,
+    McpErrorCode, McpErrorCodes, McpId, McpImageContent, McpInitializeParams, McpInitializeResult,
+    McpNotification, McpRequest, McpResourceContent, McpResponse, McpServerCapabilities,
+    McpTextContent, McpToolCallParams, McpToolCallResult, McpToolsListResult,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -90,6 +116,7 @@ pub use batch::{
     calculate_batch_confidence, create_batch_request, create_batch_result,
     create_failed_batch_result, is_batch_command, is_batch_request, is_batch_result, BatchCommand,
     BatchCommandResult, BatchOptions, BatchRequest, BatchResult, BatchSummary, BatchTiming,
+    BatchWarning,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -97,10 +124,11 @@ pub use batch::{
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub use streaming::{
-    collect_stream_data, create_complete_chunk, create_data_chunk, create_error_chunk,
-    create_progress_chunk, create_progress_chunk_with_steps, is_complete_chunk, is_data_chunk,
-    is_error_chunk, is_progress_chunk, is_stream_chunk, CompleteChunk, DataChunk, ErrorChunk,
-    ProgressChunk, StreamCallbacks, StreamChunk, StreamOptions,
+    collect_stream_data, consume_stream, create_complete_chunk, create_data_chunk,
+    create_error_chunk, create_progress_chunk, create_progress_chunk_with_steps,
+    create_timeout_controller, is_complete_chunk, is_data_chunk, is_error_chunk, is_progress_chunk,
+    is_stream_chunk, is_streamable_command, CompleteChunk, DataChunk, ErrorChunk, ProgressChunk,
+    StreamCallbacks, StreamChunk, StreamOptions, StreamableCommand, TimeoutController,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -110,11 +138,16 @@ pub use streaming::{
 pub use pipeline::{
     aggregate_pipeline_alternatives, aggregate_pipeline_confidence, aggregate_pipeline_reasoning,
     aggregate_pipeline_sources, aggregate_pipeline_warnings, build_confidence_breakdown,
-    create_pipeline, evaluate_condition, get_nested_value, is_pipeline_request, is_pipeline_result,
-    is_pipeline_step, resolve_variable, resolve_variables, PipelineAlternative, PipelineCondition,
-    PipelineContext, PipelineMetadata, PipelineOptions, PipelineRequest, PipelineResult,
-    PipelineSource, PipelineStep, PipelineWarning, StepConfidence, StepMetadata, StepReasoning,
-    StepResult, StepStatus,
+    create_pipeline, evaluate_condition, execute_pipeline, get_nested_value, is_and_condition,
+    is_eq_condition, is_exists_condition, is_gt_condition, is_gte_condition, is_lt_condition,
+    is_lte_condition, is_ne_condition, is_not_condition, is_or_condition, is_pipeline_condition,
+    is_pipeline_request, is_pipeline_result, is_pipeline_step, resolve_reference, resolve_variable,
+    resolve_variables, CommandExecutor, PipelineAlternative, PipelineCondition,
+    PipelineConditionAnd, PipelineConditionEq, PipelineConditionExists, PipelineConditionGt,
+    PipelineConditionGte, PipelineConditionLt, PipelineConditionLte, PipelineConditionNe,
+    PipelineConditionNot, PipelineConditionOr, PipelineContext, PipelineMetadata, PipelineOptions,
+    PipelineRequest, PipelineResult, PipelineSource, PipelineStep, PipelineWarning, StepConfidence,
+    StepMetadata, StepReasoning, StepResult, StepStatus,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -132,10 +165,23 @@ pub use bootstrap::{
 // ═══════════════════════════════════════════════════════════════════════════════
 
 pub use handoff::{
-    get_handoff_protocol, get_handoff_ttl, is_handoff, is_handoff_command, is_handoff_expired,
-    is_handoff_protocol, HandoffCommandLike, HandoffCredentials, HandoffMetadata, HandoffProtocol,
+    create_handoff, default_reconnect_policy, get_handoff_protocol, get_handoff_ttl, is_handoff,
+    is_handoff_command, is_handoff_expired, is_handoff_protocol, is_reconnect_policy,
+    CreateHandoffOptions, HandoffCommandLike, HandoffCredentials, HandoffMetadata, HandoffProtocol,
     HandoffResult, ReconnectPolicy,
 };
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: Telemetry types
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use telemetry::{create_telemetry_event, is_telemetry_event, TelemetryEvent, TelemetrySink};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// RE-EXPORTS: Similarity helpers
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pub use similarity::{calculate_similarity, find_similar_tools};
 
 /// Crate version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -192,7 +238,7 @@ mod tests {
     fn test_json_serialization() {
         let result = success(serde_json::json!({"name": "test"}));
         let json = serde_json::to_string(&result).unwrap();
-        
+
         // Verify camelCase serialization
         assert!(json.contains("\"success\":true"));
     }

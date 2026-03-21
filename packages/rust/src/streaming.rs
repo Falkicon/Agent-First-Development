@@ -4,6 +4,7 @@
 //! before the final result is ready.
 
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 
 use crate::errors::CommandError;
 
@@ -176,6 +177,58 @@ impl<T> Default for StreamCallbacks<T> {
     }
 }
 
+/// Marker metadata for commands that support streaming.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamableCommand {
+    /// Indicates this command supports streaming responses.
+    pub streamable: bool,
+
+    /// Type of data emitted in stream chunks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_data_type: Option<String>,
+
+    /// Whether progress updates are emitted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emits_progress: Option<bool>,
+
+    /// Estimated items-per-second throughput.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub estimated_throughput: Option<f64>,
+}
+
+/// Simple timeout tracker for streaming operations.
+#[derive(Debug, Clone)]
+pub struct TimeoutController {
+    started_at: Instant,
+    timeout: Duration,
+}
+
+impl TimeoutController {
+    /// Create a new timeout controller.
+    pub fn new(timeout_ms: u64) -> Self {
+        Self {
+            started_at: Instant::now(),
+            timeout: Duration::from_millis(timeout_ms),
+        }
+    }
+
+    /// Return the elapsed time since the controller started.
+    pub fn elapsed(&self) -> Duration {
+        self.started_at.elapsed()
+    }
+
+    /// Return the remaining time before expiry, if any.
+    pub fn remaining(&self) -> Option<Duration> {
+        self.timeout.checked_sub(self.elapsed())
+    }
+
+    /// Check whether the timeout has elapsed.
+    pub fn is_expired(&self) -> bool {
+        self.elapsed() >= self.timeout
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // FACTORY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -285,9 +338,75 @@ pub fn is_stream_chunk<T: Serialize>(value: &T) -> bool {
         || is_error_chunk(value)
 }
 
+/// Check if a value is a streamable command marker.
+pub fn is_streamable_command<T: Serialize>(value: &T) -> bool {
+    if let Ok(json) = serde_json::to_value(value) {
+        json.get("streamable") == Some(&serde_json::json!(true))
+    } else {
+        false
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // STREAM UTILITIES
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// Consume a stream and fan out events to callbacks.
+pub async fn consume_stream<T, I>(
+    stream: I,
+    callbacks: &StreamCallbacks<T>,
+) -> Result<CompleteChunk<T>, ErrorChunk>
+where
+    I: IntoIterator<Item = StreamChunk<T>>,
+{
+    for chunk in stream {
+        match chunk {
+            StreamChunk::Progress(progress) => {
+                if let Some(callback) = &callbacks.on_progress {
+                    callback(&progress);
+                }
+            }
+            StreamChunk::Data(data) => {
+                if let Some(callback) = &callbacks.on_data {
+                    callback(&data);
+                }
+            }
+            StreamChunk::Complete(complete) => {
+                if let Some(callback) = &callbacks.on_complete {
+                    callback(&complete);
+                }
+                return Ok(complete);
+            }
+            StreamChunk::Error(error) => {
+                if let Some(callback) = &callbacks.on_error {
+                    callback(&error);
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    let error = create_error_chunk(
+        CommandError::new(
+            "STREAM_ENDED_UNEXPECTEDLY",
+            "Stream ended without completion or error signal",
+        )
+        .with_suggestion("This may indicate a connection issue. Try again.")
+        .with_retryable(true),
+        true,
+    );
+
+    if let Some(callback) = &callbacks.on_error {
+        callback(&error);
+    }
+
+    Err(error)
+}
+
+/// Create a timeout controller for stream operations.
+pub fn create_timeout_controller(timeout_ms: u64) -> TimeoutController {
+    TimeoutController::new(timeout_ms)
+}
 
 /// Collect all data chunks from a stream into a single result.
 pub fn collect_stream_data<T: Clone>(chunks: &[StreamChunk<T>]) -> Vec<T> {
@@ -304,6 +423,8 @@ pub fn collect_stream_data<T: Clone>(chunks: &[StreamChunk<T>]) -> Vec<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
 
     #[test]
     fn test_progress_chunk() {
@@ -367,6 +488,20 @@ mod tests {
     }
 
     #[test]
+    fn test_is_streamable_command() {
+        let streamable = StreamableCommand {
+            streamable: true,
+            stream_data_type: Some("todo".to_string()),
+            emits_progress: Some(true),
+            estimated_throughput: None,
+        };
+        assert!(is_streamable_command(&streamable));
+
+        let not_streamable = serde_json::json!({ "streamable": false });
+        assert!(!is_streamable_command(&not_streamable));
+    }
+
+    #[test]
     fn test_collect_stream_data() {
         let chunks: Vec<StreamChunk<String>> = vec![
             StreamChunk::Progress(create_progress_chunk(25.0, "Starting")),
@@ -378,5 +513,53 @@ mod tests {
 
         let data = collect_stream_data(&chunks);
         assert_eq!(data, vec!["chunk1", "chunk2", "final"]);
+    }
+
+    #[tokio::test]
+    async fn test_consume_stream_returns_complete_chunk() {
+        let progress_seen = Arc::new(Mutex::new(0usize));
+        let data_seen = Arc::new(Mutex::new(0usize));
+
+        let callbacks = StreamCallbacks {
+            on_progress: {
+                let progress_seen = Arc::clone(&progress_seen);
+                Some(Box::new(move |_| {
+                    *progress_seen.lock().unwrap() += 1;
+                }))
+            },
+            on_data: {
+                let data_seen = Arc::clone(&data_seen);
+                Some(Box::new(move |_| {
+                    *data_seen.lock().unwrap() += 1;
+                }))
+            },
+            on_complete: None,
+            on_error: None,
+        };
+
+        let chunks = vec![
+            StreamChunk::Progress(create_progress_chunk(10.0, "Starting")),
+            StreamChunk::Data(create_data_chunk("partial".to_string(), false)),
+            StreamChunk::Complete(create_complete_chunk("done".to_string(), Some(50))),
+        ];
+
+        let result = consume_stream(chunks, &callbacks)
+            .await
+            .expect("stream should complete");
+        assert_eq!(result.data, "done");
+        assert_eq!(*progress_seen.lock().unwrap(), 1);
+        assert_eq!(*data_seen.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_timeout_controller() {
+        let controller = create_timeout_controller(5);
+        assert!(!controller.is_expired());
+        assert!(controller.remaining().is_some());
+
+        thread::sleep(Duration::from_millis(10));
+
+        assert!(controller.is_expired());
+        assert!(controller.remaining().is_none());
     }
 }

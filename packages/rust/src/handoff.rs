@@ -270,6 +270,49 @@ pub struct HandoffResult {
     pub metadata: Option<HandoffMetadata>,
 }
 
+/// Options for creating a handoff with sensible defaults applied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateHandoffOptions {
+    /// Protocol type for client dispatch.
+    pub protocol: HandoffProtocol,
+
+    /// Full URL to connect to.
+    pub endpoint: String,
+
+    /// Authentication credentials for the handoff.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<HandoffCredentials>,
+
+    /// Metadata for client decision-making.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<HandoffMetadata>,
+}
+
+impl CreateHandoffOptions {
+    /// Create a new set of handoff options.
+    pub fn new(protocol: HandoffProtocol, endpoint: impl Into<String>) -> Self {
+        Self {
+            protocol,
+            endpoint: endpoint.into(),
+            credentials: None,
+            metadata: None,
+        }
+    }
+
+    /// Set handoff credentials.
+    pub fn with_credentials(mut self, credentials: HandoffCredentials) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
+    /// Set handoff metadata.
+    pub fn with_metadata(mut self, metadata: HandoffMetadata) -> Self {
+        self.metadata = Some(metadata);
+        self
+    }
+}
+
 impl HandoffResult {
     /// Create a new handoff result.
     pub fn new(protocol: HandoffProtocol, endpoint: impl Into<String>) -> Self {
@@ -411,6 +454,48 @@ pub fn get_handoff_ttl(handoff: &HandoffResult) -> Option<u64> {
     }
 }
 
+/// Return the default reconnect policy.
+pub fn default_reconnect_policy() -> ReconnectPolicy {
+    ReconnectPolicy::default()
+}
+
+/// Create a handoff result with reconnect defaults applied.
+pub fn create_handoff(options: CreateHandoffOptions) -> HandoffResult {
+    let metadata = match options.metadata {
+        Some(mut metadata) => {
+            if metadata.reconnect.is_none() {
+                metadata.reconnect = Some(default_reconnect_policy());
+            }
+            Some(metadata)
+        }
+        None => Some(HandoffMetadata::new().with_reconnect(default_reconnect_policy())),
+    };
+
+    HandoffResult {
+        protocol: options.protocol,
+        endpoint: options.endpoint,
+        credentials: options.credentials,
+        metadata,
+    }
+}
+
+/// Check if a value is a reconnect policy.
+pub fn is_reconnect_policy<T: Serialize>(value: &T) -> bool {
+    if let Ok(json) = serde_json::to_value(value) {
+        matches!(json.get("allowed"), Some(serde_json::Value::Bool(_)))
+            && json
+                .get("maxAttempts")
+                .map(|value| value.is_number())
+                .unwrap_or(true)
+            && json
+                .get("backoffMs")
+                .map(|value| value.is_number())
+                .unwrap_or(true)
+    } else {
+        false
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // TESTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -492,6 +577,62 @@ mod tests {
 
         let no_reconnect = ReconnectPolicy::no_reconnect();
         assert!(!no_reconnect.allowed);
+    }
+
+    #[test]
+    fn test_default_reconnect_policy() {
+        let policy = default_reconnect_policy();
+        assert!(policy.allowed);
+        assert_eq!(policy.max_attempts, Some(3));
+        assert_eq!(policy.backoff_ms, Some(1000));
+    }
+
+    #[test]
+    fn test_is_reconnect_policy() {
+        assert!(is_reconnect_policy(&ReconnectPolicy::new(true)));
+
+        let valid = serde_json::json!({
+            "allowed": true,
+            "maxAttempts": 5,
+            "backoffMs": 2000
+        });
+        assert!(is_reconnect_policy(&valid));
+
+        let invalid = serde_json::json!({
+            "allowed": "true",
+            "maxAttempts": 5
+        });
+        assert!(!is_reconnect_policy(&invalid));
+    }
+
+    #[test]
+    fn test_create_handoff_applies_default_reconnect_policy() {
+        let handoff = create_handoff(CreateHandoffOptions::new(
+            HandoffProtocol::Websocket,
+            "wss://example.com/chat",
+        ));
+
+        assert_eq!(handoff.protocol, HandoffProtocol::Websocket);
+        assert_eq!(handoff.endpoint, "wss://example.com/chat");
+        assert_eq!(
+            handoff.metadata.and_then(|metadata| metadata.reconnect),
+            Some(default_reconnect_policy())
+        );
+    }
+
+    #[test]
+    fn test_create_handoff_preserves_explicit_reconnect_policy() {
+        let handoff = create_handoff(
+            CreateHandoffOptions::new(HandoffProtocol::Sse, "https://api.example.com/events")
+                .with_metadata(
+                    HandoffMetadata::new().with_reconnect(ReconnectPolicy::no_reconnect()),
+                ),
+        );
+
+        assert_eq!(
+            handoff.metadata.and_then(|metadata| metadata.reconnect),
+            Some(ReconnectPolicy::no_reconnect())
+        );
     }
 
     #[test]
