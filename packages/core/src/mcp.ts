@@ -8,12 +8,17 @@
 /**
  * MCP JSON-RPC request format.
  */
+export type McpId = string | number;
+
+/**
+ * MCP JSON-RPC request format.
+ */
 export interface McpRequest {
 	/** JSON-RPC version, always '2.0' */
 	jsonrpc: '2.0';
 
 	/** Request ID for correlation */
-	id: string | number;
+	id: McpId;
 
 	/** Method being called */
 	method: string;
@@ -30,7 +35,7 @@ export interface McpResponse {
 	jsonrpc: '2.0';
 
 	/** Request ID this is responding to */
-	id: string | number;
+	id: McpId;
 
 	/** Result if successful */
 	result?: unknown;
@@ -222,7 +227,7 @@ export function createMcpRequest(method: string, params?: Record<string, unknown
 /**
  * Create an MCP success response.
  */
-export function createMcpResponse(id: string | number, result: unknown): McpResponse {
+export function createMcpResponse(id: McpId, result: unknown): McpResponse {
 	return {
 		jsonrpc: '2.0',
 		id,
@@ -234,7 +239,7 @@ export function createMcpResponse(id: string | number, result: unknown): McpResp
  * Create an MCP error response.
  */
 export function createMcpErrorResponse(
-	id: string | number,
+	id: McpId,
 	code: number,
 	message: string,
 	data?: unknown

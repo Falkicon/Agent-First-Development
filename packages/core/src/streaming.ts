@@ -1,5 +1,8 @@
 /**
  * @fileoverview Streaming types for AFD commands
+ * // afd-override: max-lines=600
+ * Justification: Streaming chunk types, helpers, guards, and utilities are intentionally grouped
+ * here as a single public surface; this small parity addition does not justify a module split yet.
  *
  * Streaming enables incremental delivery of large results with real-time
  * progress feedback. Commands can emit progress updates, data chunks,
@@ -44,6 +47,16 @@ export interface ProgressChunk {
 	 * Human-readable progress message.
 	 */
 	message?: string;
+
+	/**
+	 * Current step number when tracking a multi-step workflow.
+	 */
+	currentStep?: number;
+
+	/**
+	 * Total number of steps when tracking a multi-step workflow.
+	 */
+	totalSteps?: number;
 
 	/**
 	 * Number of items processed so far.
@@ -347,6 +360,22 @@ export function createProgressChunk(
 		progress: Math.max(0, Math.min(1, progress)), // Clamp to 0-1
 		...options,
 	};
+}
+
+/**
+ * Create a progress chunk with explicit step tracking.
+ */
+export function createProgressChunkWithSteps(
+	progress: number,
+	currentStep: number,
+	totalSteps: number,
+	options?: Omit<ProgressChunk, 'type' | 'progress' | 'currentStep' | 'totalSteps'>
+): ProgressChunk {
+	return createProgressChunk(progress, {
+		currentStep,
+		totalSteps,
+		...options,
+	});
 }
 
 /**

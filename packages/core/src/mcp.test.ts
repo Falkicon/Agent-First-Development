@@ -6,6 +6,7 @@ import {
 	isMcpNotification,
 	isMcpRequest,
 	isMcpResponse,
+	type McpId,
 	textContent,
 } from './mcp.js';
 
@@ -49,6 +50,16 @@ describe('createMcpResponse', () => {
 	it('accepts string IDs', () => {
 		const res = createMcpResponse('abc-123', null);
 		expect(res.id).toBe('abc-123');
+	});
+});
+
+describe('McpId', () => {
+	it('accepts string and numeric identifiers', () => {
+		const stringId: McpId = 'abc-123';
+		const numberId: McpId = 42;
+
+		expect(stringId).toBe('abc-123');
+		expect(numberId).toBe(42);
 	});
 });
 

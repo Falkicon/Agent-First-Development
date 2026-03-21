@@ -6,6 +6,7 @@ import {
 	createDataChunk,
 	createErrorChunk,
 	createProgressChunk,
+	createProgressChunkWithSteps,
 	createTimeoutController,
 	isCompleteChunk,
 	isDataChunk,
@@ -44,6 +45,20 @@ describe('createProgressChunk', () => {
 		expect(chunk.itemsTotal).toBe(100);
 		expect(chunk.estimatedTimeRemainingMs).toBe(5000);
 		expect(chunk.phase).toBe('validation');
+	});
+});
+
+describe('createProgressChunkWithSteps', () => {
+	it('creates a progress chunk with step metadata', () => {
+		const chunk = createProgressChunkWithSteps(0.5, 2, 4, {
+			message: 'Running step 2 of 4',
+		});
+
+		expect(chunk.type).toBe('progress');
+		expect(chunk.progress).toBe(0.5);
+		expect(chunk.currentStep).toBe(2);
+		expect(chunk.totalSteps).toBe(4);
+		expect(chunk.message).toBe('Running step 2 of 4');
 	});
 });
 
