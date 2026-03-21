@@ -4,18 +4,44 @@
 //! is defined as a command with a clear schema.
 
 use async_trait::async_trait;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
-use crate::batch::{
-    BatchCommandResult, BatchRequest, BatchResult, BatchSummary, BatchTiming,
-};
+use crate::batch::{BatchCommandResult, BatchRequest, BatchResult, BatchSummary, BatchTiming};
 use crate::errors::CommandError;
 use crate::handoff::HandoffCommandLike;
 use crate::result::CommandResult;
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMMAND NAME VALIDATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+fn command_name_pattern() -> &'static Regex {
+    static PATTERN: OnceLock<Regex> = OnceLock::new();
+    PATTERN.get_or_init(|| {
+        Regex::new(r"^[a-z][a-z0-9]*(-[a-z][a-z0-9]*)+$")
+            .expect("command name regex should be valid")
+    })
+}
+
+/// Validate that a command name follows the `domain-action` kebab-case convention.
+pub fn validate_command_name(name: &str) -> Result<(), String> {
+    if name.trim().is_empty() {
+        return Err("Command name must not be empty".to_string());
+    }
+
+    if !command_name_pattern().is_match(name) {
+        return Err(format!(
+            "Command name '{name}' must use kebab-case with at least two segments (e.g., 'domain-action')."
+        ));
+    }
+
+    Ok(())
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // JSON SCHEMA TYPES
@@ -196,6 +222,65 @@ impl CommandParameter {
     }
 }
 
+/// A concrete input example for a command.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommandExample<T = serde_json::Value> {
+    /// Short description of what this example demonstrates.
+    pub title: String,
+
+    /// A valid input payload.
+    pub input: T,
+}
+
+impl<T> CommandExample<T> {
+    /// Create a new command example.
+    pub fn new(title: impl Into<String>, input: T) -> Self {
+        Self {
+            title: title.into(),
+            input,
+        }
+    }
+}
+
+/// Controls which interfaces a command is exposed to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExposeOptions {
+    #[serde(default = "default_true")]
+    pub palette: bool,
+    #[serde(default = "default_false")]
+    pub mcp: bool,
+    #[serde(default = "default_true")]
+    pub agent: bool,
+    #[serde(default = "default_false")]
+    pub cli: bool,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_false() -> bool {
+    false
+}
+
+impl Default for ExposeOptions {
+    fn default() -> Self {
+        Self {
+            palette: true,
+            mcp: false,
+            agent: true,
+            cli: false,
+        }
+    }
+}
+
+/// Return the default command exposure configuration.
+pub fn default_expose() -> ExposeOptions {
+    ExposeOptions::default()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMMAND CONTEXT
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -257,6 +342,22 @@ pub enum ExecutionTime {
 /// Type alias for async command handler function.
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Deferred execution function used by command middleware.
+pub type MiddlewareNext =
+    Arc<dyn Fn() -> BoxFuture<'static, CommandResult<serde_json::Value>> + Send + Sync>;
+
+/// Middleware function type for intercepting command execution.
+pub type CommandMiddleware = Arc<
+    dyn Fn(
+            String,
+            serde_json::Value,
+            CommandContext,
+            MiddlewareNext,
+        ) -> BoxFuture<'static, CommandResult<serde_json::Value>>
+        + Send
+        + Sync,
+>;
+
 /// Trait for command handlers.
 #[async_trait]
 pub trait CommandHandler: Send + Sync {
@@ -308,6 +409,12 @@ pub struct CommandDefinition {
 
     /// Estimated execution time.
     pub execution_time: Option<ExecutionTime>,
+
+    /// Which interfaces this command is exposed to.
+    pub expose: ExposeOptions,
+
+    /// Concrete input examples to help agents construct valid payloads.
+    pub examples: Option<Vec<CommandExample>>,
 }
 
 impl CommandDefinition {
@@ -332,6 +439,8 @@ impl CommandDefinition {
             tags: None,
             mutation: false,
             execution_time: None,
+            expose: default_expose(),
+            examples: None,
         }
     }
 
@@ -368,6 +477,18 @@ impl CommandDefinition {
     /// Set the version for this command.
     pub fn with_version(mut self, version: impl Into<String>) -> Self {
         self.version = Some(version.into());
+        self
+    }
+
+    /// Set the command exposure configuration.
+    pub fn with_expose(mut self, expose: ExposeOptions) -> Self {
+        self.expose = expose;
+        self
+    }
+
+    /// Set concrete command examples.
+    pub fn with_examples(mut self, examples: Vec<CommandExample>) -> Self {
+        self.examples = Some(examples);
         self
     }
 
@@ -430,10 +551,13 @@ impl CommandRegistry {
     /// # Errors
     /// Returns an error if a command with the same name already exists.
     pub fn register(&mut self, command: CommandDefinition) -> Result<(), String> {
+        validate_command_name(&command.name)?;
+
         if self.commands.contains_key(&command.name) {
             return Err(format!("Command '{}' is already registered", command.name));
         }
-        self.commands.insert(command.name.clone(), Arc::new(command));
+        self.commands
+            .insert(command.name.clone(), Arc::new(command));
         Ok(())
     }
 
@@ -525,6 +649,7 @@ impl CommandRegistry {
                     total_ms: Some(0),
                     average_ms: None,
                 },
+                warnings: None,
                 error: Some(CommandError {
                     code: "INVALID_BATCH_REQUEST".to_string(),
                     message: "Batch request must contain at least one command".to_string(),
@@ -608,6 +733,7 @@ impl CommandRegistry {
                     None
                 },
             },
+            warnings: None,
             error: None,
         }
     }
@@ -701,7 +827,10 @@ mod tests {
         let cmd = CommandDefinition::new(
             "test-echo",
             "Echoes input back",
-            vec![CommandParameter::required_string("message", "Message to echo")],
+            vec![CommandParameter::required_string(
+                "message",
+                "Message to echo",
+            )],
             TestHandler,
         );
 
@@ -715,11 +844,29 @@ mod tests {
         assert!(result.success);
     }
 
+    #[test]
+    fn test_validate_command_name() {
+        assert!(validate_command_name("todo-create").is_ok());
+        assert!(validate_command_name("create").is_err());
+        assert!(validate_command_name("TodoCreate").is_err());
+    }
+
+    #[test]
+    fn test_default_expose_values() {
+        let expose = default_expose();
+        assert!(expose.palette);
+        assert!(expose.agent);
+        assert!(!expose.mcp);
+        assert!(!expose.cli);
+    }
+
     #[tokio::test]
     async fn test_command_not_found() {
         let registry = CommandRegistry::new();
 
-        let result = registry.execute("nonexistent", serde_json::json!({}), None).await;
+        let result = registry
+            .execute("nonexistent", serde_json::json!({}), None)
+            .await;
 
         assert!(!result.success);
         assert_eq!(result.error.as_ref().unwrap().code, "COMMAND_NOT_FOUND");
@@ -747,13 +894,9 @@ mod tests {
 
     #[test]
     fn test_handoff_command() {
-        let cmd = CommandDefinition::new(
-            "stream-connect",
-            "Connect to stream",
-            vec![],
-            TestHandler,
-        )
-        .as_handoff_with_protocol("websocket");
+        let cmd =
+            CommandDefinition::new("stream-connect", "Connect to stream", vec![], TestHandler)
+                .as_handoff_with_protocol("websocket");
 
         assert!(cmd.handoff);
         assert_eq!(cmd.handoff_protocol, Some("websocket".to_string()));
@@ -764,20 +907,11 @@ mod tests {
     fn test_list_handoff_commands() {
         let mut registry = CommandRegistry::new();
 
-        let cmd1 = CommandDefinition::new(
-            "test-regular",
-            "Regular command",
-            vec![],
-            TestHandler,
-        );
+        let cmd1 = CommandDefinition::new("test-regular", "Regular command", vec![], TestHandler);
 
-        let cmd2 = CommandDefinition::new(
-            "stream-connect",
-            "Connect to stream",
-            vec![],
-            TestHandler,
-        )
-        .as_handoff_with_protocol("websocket");
+        let cmd2 =
+            CommandDefinition::new("stream-connect", "Connect to stream", vec![], TestHandler)
+                .as_handoff_with_protocol("websocket");
 
         let cmd3 = CommandDefinition::new(
             "events-subscribe",

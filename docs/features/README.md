@@ -10,11 +10,18 @@ Feature specifications organized by lifecycle stage.
 | [active/](./active/) | Approved features in implementation |
 | [complete/](./complete/) | Shipped features (reference archive) |
 
+## Active Features
+
+| Feature | Description |
+|---------|-------------|
+| [Rust Parity Closure](./active/rust-parity/) | Close the export-surface gap between TypeScript and Rust using `alfred parity` as the tracking source |
+
 ## Complete Features
 
 | Feature | Description |
 |---------|-------------|
 | [AFD Bot (Alfred)](./complete/afd-bot/) | Deterministic repo quality agent with lint, parity, and quality commands |
+| [AFD PyPI Publishing](./complete/afd-pypi-publishing/) | Python package publishing to PyPI |
 | [Auth Adapter](./complete/auth-adapter/) | Provider-agnostic authentication adapter for AFD servers |
 | [Command Prerequisites](./complete/command-prerequisites/) | Declarative `requires` field for planning-order dependencies |
 | [Contextual Tool Loading](./complete/contextual-tool-loading/) | Dynamic context scoping for large command sets |
@@ -34,7 +41,6 @@ Feature specifications organized by lifecycle stage.
 
 | Feature | Description |
 |---------|-------------|
-| [AFD PyPI Publishing](./proposed/afd-pypi-publishing/) | Python package publishing to PyPI |
 | [Chat History Panel](./proposed/chat-history-panel/) | Chat history UI component |
 | [Code Client](./proposed/code-client/) | Code-based client research |
 | [Design to Code](./proposed/design-to-code/) | Figma-to-code generation pipeline |

@@ -148,7 +148,11 @@ pub struct BatchCommandResult<T = serde_json::Value> {
 
 impl<T> BatchCommandResult<T> {
     /// Create a successful batch command result.
-    pub fn success(id: impl Into<String>, command: impl Into<String>, result: CommandResult<T>) -> Self {
+    pub fn success(
+        id: impl Into<String>,
+        command: impl Into<String>,
+        result: CommandResult<T>,
+    ) -> Self {
         Self {
             id: id.into(),
             command: command.into(),
@@ -162,6 +166,20 @@ impl<T> BatchCommandResult<T> {
         self.duration_ms = Some(duration_ms);
         self
     }
+}
+
+/// A warning surfaced from a command within a batch execution.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchWarning {
+    /// ID of the command that produced this warning.
+    pub command_id: String,
+
+    /// Machine-readable warning code.
+    pub code: String,
+
+    /// Human-readable warning message.
+    pub message: String,
 }
 
 /// Summary statistics for a batch execution.
@@ -243,6 +261,10 @@ pub struct BatchResult<T = serde_json::Value> {
     /// Timing information.
     pub timing: BatchTiming,
 
+    /// Aggregated warnings surfaced by commands in the batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<BatchWarning>>,
+
     /// Batch-level error if the batch itself failed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<CommandError>,
@@ -292,6 +314,23 @@ pub fn create_batch_result<T>(
         None
     };
 
+    let warnings: Vec<BatchWarning> = results
+        .iter()
+        .flat_map(|result| {
+            result
+                .result
+                .warnings
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|warning| BatchWarning {
+                    command_id: result.id.clone(),
+                    code: warning.code.clone(),
+                    message: warning.message.clone(),
+                })
+        })
+        .collect();
+
     BatchResult {
         success: failed == 0,
         results,
@@ -308,6 +347,7 @@ pub fn create_batch_result<T>(
             total_ms: Some(total_ms),
             average_ms,
         },
+        warnings: (!warnings.is_empty()).then_some(warnings),
         error: None,
     }
 }
@@ -324,6 +364,7 @@ pub fn create_failed_batch_result<T>(error: CommandError, started_at: &str) -> B
             total_ms: None,
             average_ms: None,
         },
+        warnings: None,
         error: Some(error),
     }
 }
@@ -364,7 +405,9 @@ pub fn is_batch_request<T: Serialize>(value: &T) -> bool {
 /// Check if a value is a BatchResult.
 pub fn is_batch_result<T: Serialize>(value: &T) -> bool {
     if let Ok(json) = serde_json::to_value(value) {
-        json.get("results").is_some() && json.get("summary").is_some() && json.get("timing").is_some()
+        json.get("results").is_some()
+            && json.get("summary").is_some()
+            && json.get("timing").is_some()
     } else {
         false
     }
@@ -382,7 +425,8 @@ pub fn is_batch_command<T: Serialize>(value: &T) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::result::success;
+    use crate::metadata::Warning;
+    use crate::result::{success, success_with, ResultOptions};
 
     #[test]
     fn test_batch_command_creation() {
@@ -435,6 +479,39 @@ mod tests {
     fn test_batch_summary_success_rate() {
         let summary = BatchSummary::new(10, 8, 2, 0);
         assert!((summary.success_rate() - 0.8).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_batch_warnings_are_aggregated() {
+        let warned_result = success_with(
+            "result1".to_string(),
+            ResultOptions {
+                warnings: Some(vec![Warning::new(
+                    "PARTIAL_DATA",
+                    "Some records were skipped",
+                )]),
+                ..Default::default()
+            },
+        );
+
+        let results = vec![
+            BatchCommandResult::success("1", "cmd1", warned_result),
+            BatchCommandResult::success("2", "cmd2", success::<String>("result2".to_string())),
+        ];
+
+        let batch_result = create_batch_result(
+            results,
+            "2025-01-01T00:00:00Z",
+            "2025-01-01T00:00:01Z",
+            1000,
+        );
+
+        let warnings = batch_result
+            .warnings
+            .expect("batch warnings should be present");
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0].command_id, "1");
+        assert_eq!(warnings[0].code, "PARTIAL_DATA");
     }
 
     #[test]

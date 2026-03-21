@@ -5,6 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt::Display;
 
 /// Standard error structure for command failures.
 ///
@@ -171,7 +172,10 @@ impl CommandError {
     /// Create a timeout error.
     pub fn timeout(operation_name: &str, timeout_ms: u64) -> Self {
         let mut details = HashMap::new();
-        details.insert("operationName".to_string(), serde_json::json!(operation_name));
+        details.insert(
+            "operationName".to_string(),
+            serde_json::json!(operation_name),
+        );
         details.insert("timeoutMs".to_string(), serde_json::json!(timeout_ms));
 
         Self {
@@ -246,6 +250,9 @@ pub mod error_codes {
     pub const COMMAND_CANCELLED: &str = "COMMAND_CANCELLED";
 }
 
+/// Standard error code alias for parity with other AFD implementations.
+pub type ErrorCode = String;
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ERROR FACTORY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -256,7 +263,10 @@ pub fn create_error(code: &str, message: &str) -> CommandError {
 }
 
 /// Create a validation error.
-pub fn validation_error(message: &str, details: Option<HashMap<String, serde_json::Value>>) -> CommandError {
+pub fn validation_error(
+    message: &str,
+    details: Option<HashMap<String, serde_json::Value>>,
+) -> CommandError {
     CommandError {
         code: error_codes::VALIDATION_ERROR.to_string(),
         message: message.to_string(),
@@ -285,6 +295,11 @@ pub fn timeout_error(operation_name: &str, timeout_ms: u64) -> CommandError {
 /// Create an internal error.
 pub fn internal_error(message: &str) -> CommandError {
     CommandError::internal(message)
+}
+
+/// Wrap an arbitrary error-like value in a CommandError.
+pub fn wrap_error(error: impl Display) -> CommandError {
+    CommandError::internal(&error.to_string())
 }
 
 /// Type guard to check if a value is a CommandError.
@@ -328,7 +343,7 @@ mod tests {
     fn test_json_serialization() {
         let error = CommandError::not_found("Item", "abc");
         let json = serde_json::to_string(&error).unwrap();
-        
+
         // Verify camelCase serialization
         assert!(json.contains("\"code\":\"NOT_FOUND\""));
         assert!(json.contains("\"resourceType\""));
@@ -340,9 +355,16 @@ mod tests {
         let error = CommandError::new("CUSTOM_ERROR", "Something went wrong")
             .with_suggestion("Try again later")
             .with_retryable(true);
-        
+
         assert_eq!(error.code, "CUSTOM_ERROR");
         assert_eq!(error.suggestion, Some("Try again later".to_string()));
         assert_eq!(error.retryable, Some(true));
+    }
+
+    #[test]
+    fn test_wrap_error() {
+        let error = wrap_error("unexpected failure");
+        assert_eq!(error.code, "INTERNAL_ERROR");
+        assert_eq!(error.message, "unexpected failure");
     }
 }
