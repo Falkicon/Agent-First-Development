@@ -14,6 +14,7 @@ Feature specifications organized by lifecycle stage.
 
 | Feature | Description |
 |---------|-------------|
+| [Python Parity Closure](./active/python-parity/) | Close the export-surface gap between TypeScript and Python using `alfred parity` as the tracking source |
 | [Rust Parity Closure](./active/rust-parity/) | Close the export-surface gap between TypeScript and Rust using `alfred parity` as the tracking source |
 
 ## Complete Features
