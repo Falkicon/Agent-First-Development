@@ -6,7 +6,7 @@ Agentic migration uses AI agents to discover, plan, transform, verify, and land 
 
 ## Architecture
 
-```
+````
 ┌─────────────────────────────────────────────────────┐
 │                  Migration Orchestrator              │
 │                                                      │
