@@ -441,3 +441,57 @@ def check_circular_prerequisites(commands: list[SurfaceCommand]) -> list[Surface
 			dfs(cmd.name, [])
 
 	return findings
+
+
+# ---------------------------------------------------------------------------
+# Rule 12: Missing Context
+# ---------------------------------------------------------------------------
+
+def check_missing_context(
+	commands: list[SurfaceCommand],
+	configured_contexts: list[str],
+) -> list[SurfaceFinding]:
+	"""Flag commands without a contexts declaration when contexts are configured."""
+	if not configured_contexts:
+		return []
+
+	findings: list[SurfaceFinding] = []
+	for cmd in commands:
+		if not cmd.contexts:
+			findings.append(SurfaceFinding(
+				rule="missing-context",
+				severity="info",
+				message=f'Command "{cmd.name}" has no contexts declaration',
+				commands=[cmd.name],
+				suggestion=(
+					"Add a contexts array to scope this command, or leave it without "
+					"contexts to make it universally available."
+				),
+				evidence={"configuredContexts": configured_contexts},
+			))
+	return findings
+
+
+# ---------------------------------------------------------------------------
+# Rule 13: Missing Output Schema
+# ---------------------------------------------------------------------------
+
+def check_missing_output_schema(commands: list[SurfaceCommand]) -> list[SurfaceFinding]:
+	"""Flag commands without an output schema declaration."""
+	findings: list[SurfaceFinding] = []
+	for cmd in commands:
+		if not cmd.output_json_schema:
+			findings.append(SurfaceFinding(
+				rule="missing-output-schema",
+				severity="info",
+				message=(
+					f'Command "{cmd.name}" has no output schema — agents cannot predict '
+					"response shape"
+				),
+				commands=[cmd.name],
+				suggestion=(
+					"Add an output schema so agents can construct pipelines and process "
+					"results reliably."
+				),
+			))
+	return findings

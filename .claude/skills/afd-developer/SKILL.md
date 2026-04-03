@@ -21,6 +21,7 @@ Expert guidance for building software with the Agent-First Development methodolo
 | Philosophy, UX design for agents, "why AFD" | [references/philosophy.md](references/philosophy.md) |
 | Trust, CLI validation rationale, honesty check | [references/trust-validation.md](references/trust-validation.md) |
 | Implementation phases, checklists, anti-patterns | [references/implementation-phases.md](references/implementation-phases.md) |
+| Output schemas, contexts, tool strategies, discover-detail-call workflows | [references/implementation-phases.md](references/implementation-phases.md) |
 | Production: security, observability, mutation safety | [references/production-considerations.md](references/production-considerations.md) |
 
 ## Core Philosophy
@@ -42,6 +43,15 @@ This principle ensures:
 - UI is a thin wrapper over commands
 - Same commands power both human UI and agent interactions
 
+### Functional Parity, Not Literal Symmetry
+
+AFD implementations SHOULD aim for the same capability set and agent-visible behavior across languages, but the public API MAY be idiomatic to the host language.
+
+- Framework-agnostic command surfaces MUST stay framework-agnostic.
+- React or browser integration SHOULD stay in examples or ecosystem layers.
+- Cross-language ports MAY rename helpers, adjust signatures, or reshape modules when that improves language fit without changing behavior.
+- Keep shared parity decisions aligned around agent-visible features such as output schemas, validated examples, prerequisite metadata, context scoping, grouped/lazy tool strategies, and meta-tools like `afd-call`, `afd-batch`, `afd-pipe`, `afd-discover`, and `afd-detail`.
+
 ## Development Workflow
 
 ```
@@ -49,6 +59,8 @@ This principle ensures:
 |  1. DEFINE                                  |
 |  - Create command with Zod/Pydantic schema  |
 |  - Define inputs, outputs, error codes      |
+|  - Add planning metadata: examples, requires, contexts |
+|  - Choose exposure/discovery strategy       |
 |  - Register in command registry             |
 +---------------------------------------------+
               |
@@ -56,6 +68,8 @@ This principle ensures:
 +---------------------------------------------+
 |  2. VALIDATE                                |
 |  - Test via CLI: afd call <command>         |
+|  - Inspect afd-help / afd-discover / afd-detail output |
+|  - Run surface validation for the agent contract |
 |  - DO NOT proceed until CLI works           |
 |  - Add automated tests                      |
 +---------------------------------------------+
@@ -65,9 +79,20 @@ This principle ensures:
 |  3. SURFACE                                 |
 |  - Build UI that calls command              |
 |  - Use metadata for UX (confidence, etc.)   |
+|  - Preserve context/tool-strategy behavior  |
 |  - Integration testing                      |
 +---------------------------------------------+
 ```
+
+## Discovery Contract
+
+For large command surfaces, the default agent workflow is:
+
+1. discover candidate commands
+2. inspect schemas and examples
+3. call the chosen command
+
+In AFD terms that usually means `afd-discover -> afd-detail -> afd-call`. `afd-call`, `afd-batch`, and `afd-pipe` are universal runtime tools, while `individual`, `grouped`, and `lazy` strategies control how the rest of the surface is exposed.
 
 ## Command Structure
 

@@ -3,6 +3,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -113,6 +114,39 @@ class TestConnectCommand:
         assert result.exit_code == 0
         assert result.output == ""
 
+    def test_connect_url_uses_sse_transport(self, runner, temp_state_file):
+        """Should use the real SSE transport for URL-based servers."""
+        sse_transport = MagicMock()
+        sse_transport.connect = AsyncMock()
+        sse_transport.disconnect = AsyncMock()
+        sse_transport.list_tools = AsyncMock(return_value=[])
+
+        with (
+            patch.object(_cli_main_module, "SseTransport", return_value=sse_transport) as sse_ctor,
+            patch.object(_cli_main_module, "FastMCPTransport", side_effect=AssertionError("FastMCPTransport should not be used for URLs")),
+        ):
+            result = runner.invoke(cli, ["connect", "http://example.com/sse"])
+
+        assert result.exit_code == 0
+        sse_ctor.assert_called_once_with("http://example.com/sse")
+        sse_transport.connect.assert_called_once()
+
+    def test_tools_url_uses_remote_transport(self, runner, temp_state_file):
+        """Should use a remote transport when a URL is supplied to server options."""
+        sse_transport = MagicMock()
+        sse_transport.connect = AsyncMock()
+        sse_transport.disconnect = AsyncMock()
+        sse_transport.list_tools = AsyncMock(return_value=[])
+
+        with (
+            patch.object(_cli_main_module, "SseTransport", return_value=sse_transport),
+            patch.object(_cli_main_module, "FastMCPTransport", side_effect=AssertionError("FastMCPTransport should not be used for URLs")),
+        ):
+            result = runner.invoke(cli, ["tools", "-s", "http://example.com/sse"])
+
+        assert result.exit_code == 0
+        sse_transport.connect.assert_called_once()
+
 
 class TestDisconnectCommand:
     """Tests for the disconnect command."""
@@ -222,6 +256,184 @@ class TestValidateCommand:
         result = runner.invoke(cli, ["validate", "-s", "mock"])
         assert result.exit_code == 0
         assert "OK" in result.output or "passed" in result.output
+
+    def test_validate_surface_uses_bootstrap_commands(self, runner, temp_state_file):
+        """Surface validation should prefer afd-help/afd-schema when available."""
+        transport = MagicMock()
+        transport.connect = AsyncMock()
+        transport.disconnect = AsyncMock()
+        transport.list_tools = AsyncMock(return_value=[
+            ToolInfo(name="afd-help", description="Help"),
+            ToolInfo(name="afd-schema", description="Schema"),
+            ToolInfo(name="afd-context-list", description="Contexts"),
+        ])
+
+        async def _call_tool(name, arguments):
+            if name == "afd-help":
+                return {
+                    "data": {
+                        "commands": [
+                            {
+                                "name": "session-open",
+                                "description": "Open a user session",
+                                "category": "session",
+                            },
+                            {
+                                "name": "user-create",
+                                "description": "Creates a new user account in the system",
+                                "category": "users",
+                                "requires": ["session-open"],
+                                "contexts": ["editing"],
+                            }
+                        ]
+                    }
+                }
+            if name == "afd-schema":
+                return {
+                    "data": {
+                        "schemas": [
+                            {
+                                "name": "session-open",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object", "properties": {"sessionId": {"type": "string"}}},
+                            },
+                            {
+                                "name": "user-create",
+                                "input_schema": {"type": "object", "properties": {}},
+                                "output_schema": {"type": "object", "properties": {"id": {"type": "string"}}},
+                            }
+                        ]
+                    }
+                }
+            if name == "afd-context-list":
+                return {"data": {"contexts": [{"name": "editing"}]}}
+            raise AssertionError(f"Unexpected tool call: {name}")
+
+        transport.call_tool = AsyncMock(side_effect=_call_tool)
+
+        with patch("afd.cli.main._get_transport", return_value=transport):
+            result = runner.invoke(cli, ["validate", "--surface", "-s", "mock"])
+
+        assert result.exit_code == 0
+        assert "Surface validation passed" in result.output
+        called_tools = [call.args[0] for call in transport.call_tool.await_args_list]
+        assert called_tools == ["afd-context-list", "afd-help", "afd-schema"]
+
+    def test_validate_surface_fails_on_invalid_surface(self, runner, temp_state_file):
+        """Surface validation should fail when bootstrap metadata reveals errors."""
+        transport = MagicMock()
+        transport.connect = AsyncMock()
+        transport.disconnect = AsyncMock()
+        transport.list_tools = AsyncMock(return_value=[
+            ToolInfo(name="afd-help", description="Help"),
+            ToolInfo(name="afd-schema", description="Schema"),
+        ])
+
+        async def _call_tool(name, arguments):
+            if name == "afd-help":
+                return {
+                    "data": {
+                        "commands": [
+                            {
+                                "name": "badName",
+                                "description": "Creates a new user account in the system",
+                                "category": "users",
+                            }
+                        ]
+                    }
+                }
+            if name == "afd-schema":
+                return {
+                    "data": {
+                        "schemas": [
+                            {
+                                "name": "badName",
+                                "input_schema": {"type": "object", "properties": {}},
+                            }
+                        ]
+                    }
+                }
+            raise AssertionError(f"Unexpected tool call: {name}")
+
+        transport.call_tool = AsyncMock(side_effect=_call_tool)
+
+        with patch("afd.cli.main._get_transport", return_value=transport):
+            result = runner.invoke(cli, ["validate", "--surface", "-s", "mock"])
+
+        assert result.exit_code == 1
+        assert "Surface validation failed" in result.output
+
+    def test_validate_surface_passes_flags_to_surface_validator(self, runner, temp_state_file):
+        """Surface validation should thread CLI flags into validation options."""
+        transport = MagicMock()
+        transport.connect = AsyncMock()
+        transport.disconnect = AsyncMock()
+        transport.list_tools = AsyncMock(return_value=[
+            ToolInfo(
+                name="user-create",
+                description="Create a user account",
+                input_schema={"type": "object", "properties": {}},
+                meta={
+                    "outputSchema": {"type": "object", "properties": {"id": {"type": "string"}}},
+                    "contexts": ["editing"],
+                    "requires": ["session-open"],
+                },
+            ),
+        ])
+        transport.call_tool = AsyncMock(side_effect=AssertionError("Fallback bootstrap path should not be used"))
+
+        captured = {}
+
+        def _fake_validate(commands, options):
+            captured["commands"] = commands
+            captured["options"] = options
+            return SimpleNamespace(
+                valid=True,
+                findings=[],
+                summary=SimpleNamespace(
+                    command_count=1,
+                    error_count=0,
+                    warning_count=0,
+                    info_count=0,
+                    suppressed_count=0,
+                    rules_evaluated=["missing-output-schema", "missing-context"],
+                    duration_ms=1.0,
+                ),
+            )
+
+        with (
+            patch("afd.cli.main._get_transport", return_value=transport),
+            patch("afd.cli.main.validate_command_surface", side_effect=_fake_validate),
+        ):
+            result = runner.invoke(
+                cli,
+                [
+                    "validate",
+                    "--surface",
+                    "--similarity-threshold",
+                    "0.9",
+                    "--skip-category",
+                    "users",
+                    "--skip-category",
+                    "admin",
+                    "--suppress",
+                    "missing-context",
+                    "--strict",
+                    "--verbose",
+                    "-s",
+                    "mock",
+                ],
+            )
+
+        assert result.exit_code == 0
+        assert "Surface validation passed" in result.output
+        assert captured["commands"][0]["outputJsonSchema"]["properties"]["id"]["type"] == "string"
+        assert captured["commands"][0]["contexts"] == ["editing"]
+        assert captured["commands"][0]["requires"] == ["session-open"]
+        assert captured["options"].similarity_threshold == 0.9
+        assert captured["options"].skip_categories == ["users", "admin"]
+        assert captured["options"].suppressions == ["missing-context"]
+        assert captured["options"].strict is True
 
 
 # ==============================================================================

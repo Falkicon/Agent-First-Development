@@ -2,6 +2,8 @@
 
 A Python toolkit for building applications with the Agent-First Development methodology.
 
+Python follows the shared AFD feature set and agent-visible behavior, but keeps Pythonic APIs where that fits the language better. The goal is functional parity, not a byte-for-byte TypeScript port.
+
 ## What is AFD?
 
 **Agent-First Development** is a software development methodology where AI agents are treated as first-class users from day one. Instead of building UI first and adding API/agent access later, AFD inverts this:
@@ -10,6 +12,8 @@ A Python toolkit for building applications with the Agent-First Development meth
 Traditional:  UI → API → Agent Access (afterthought)
 Agent-First:  Commands → Validation → UI (surface)
 ```
+
+Core AFD surfaces stay framework-agnostic. React or browser integrations belong in examples and ecosystem layers, not in the `afd` core package.
 
 ## Installation
 

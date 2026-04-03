@@ -14,6 +14,15 @@ description: >
 
 Patterns for implementing AFD commands in Rust.
 
+## Parity Rule
+
+Rust implementations SHOULD match the shared AFD capability set and agent-visible behavior, while keeping Rust-idiomatic data types, traits, and module boundaries where that improves fit.
+
+- Core command surfaces MUST stay framework-agnostic.
+- React or browser integrations SHOULD stay in examples or ecosystem layers.
+- Cross-language parity does NOT require a 1:1 port of TypeScript or Python helper names.
+- Shared parity features to evaluate include output schemas, validated examples, prerequisite metadata, context scoping, grouped/lazy discovery strategies, and the common meta-tool patterns exposed to agents.
+
 ## Crate Imports
 
 ```rust
@@ -360,6 +369,12 @@ The Rust crate now includes parity helpers for:
 - handoff and telemetry: `create_handoff`, `default_reconnect_policy`, `TelemetryEvent`
 - MCP and pipelines: `create_mcp_request`, `create_mcp_response`, `execute_pipeline`
 - discovery helpers: `calculate_similarity`, `find_similar_tools`
+
+Status clarity for cross-language planning:
+
+- Shared today: output schemas, examples, exposure metadata, pipelines, discovery helpers, telemetry, handoff
+- Not yet part of the Rust crate surface: context-scoped command registration and the full server-side tool-strategy/bootstrap workflow exposed in TypeScript and Python
+- Parity decisions SHOULD compare agent-visible behavior first, then document Rust-specific gaps explicitly instead of assuming every TS/Python feature already exists in the crate
 
 ### Warnings
 

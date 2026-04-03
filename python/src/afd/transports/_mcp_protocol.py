@@ -154,17 +154,30 @@ class _HttpBasedTransport:
 
     @staticmethod
     def _derive_message_url(url: str) -> str:
-        """Derive the ``/message`` endpoint from a given URL.
+        """Derive the FastMCP ``/messages/`` endpoint from a server URL.
 
-        If the URL ends with ``/sse``, replace with ``/message``.
-        If it already ends with ``/message``, keep as-is.
-        Otherwise, append ``/message``.
+        If the URL ends with ``/sse``, replace it with ``/messages/``.
+        If it already points at a legacy ``/message`` or current
+        ``/messages`` endpoint, normalize to ``/messages/``.
+        Otherwise, append ``/messages/``.
         """
-        if url.endswith("/sse"):
-            return url[: -len("/sse")] + "/message"
-        if url.endswith("/message"):
-            return url
-        return url.rstrip("/") + "/message"
+        normalized = url.rstrip("/")
+
+        if normalized.endswith("/sse"):
+            return normalized[: -len("/sse")] + "/messages/"
+        if normalized.endswith("/message"):
+            return normalized[: -len("/message")] + "/messages/"
+        if normalized.endswith("/messages"):
+            return normalized + "/"
+        return normalized + "/messages/"
+
+    @staticmethod
+    def _derive_health_url(message_url: str) -> str:
+        """Derive a best-effort health endpoint from the message URL."""
+        normalized = message_url.rstrip("/")
+        if normalized.endswith("/messages"):
+            return normalized[: -len("/messages")] + "/health"
+        return normalized + "/health"
 
     @staticmethod
     def _extract_content(result: Any) -> Any:

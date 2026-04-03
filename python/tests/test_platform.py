@@ -256,7 +256,7 @@ class TestExecCommand:
             ExecOptions(cwd=tmpdir),
         )
         assert result.exit_code == 0
-        assert "tmp" in result.stdout.lower() or "temp" in result.stdout.lower()
+        assert Path(result.stdout).resolve() == Path(tmpdir).resolve()
 
     async def test_env_option(self):
         result = await exec_command(

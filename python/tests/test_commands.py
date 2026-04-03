@@ -5,6 +5,7 @@ import pytest
 from afd.core.commands import (
     CommandContext,
     CommandDefinition,
+    CommandExample,
     CommandParameter,
     command_to_mcp_tool,
     create_command_registry,
@@ -115,11 +116,17 @@ class TestCommandDefinition:
             tags=["documents", "create"],
             mutation=True,
             execution_time="fast",
+            returns={"type": "object", "properties": {"id": {"type": "string"}}},
+            examples=[CommandExample(input={"title": "Spec"})],
+            requires=["workspace-open"],
+            contexts=["workspace"],
         )
         assert cmd.category == "documents"
         assert len(cmd.parameters) == 2
         assert cmd.mutation is True
         assert cmd.execution_time == "fast"
+        assert cmd.requires == ["workspace-open"]
+        assert cmd.contexts == ["workspace"]
 
 
 class TestCommandRegistry:
@@ -315,6 +322,11 @@ class TestCommandToMcpTool:
                     enum=["active", "inactive"],
                 ),
             ],
+            mutation=True,
+            returns={"type": "object", "properties": {"id": {"type": "string"}}},
+            examples=[CommandExample(input={"title": "Example"}, title="Basic")],
+            requires=["auth-login"],
+            contexts=["workspace"],
         )
         tool = command_to_mcp_tool(cmd)
 
@@ -327,3 +339,8 @@ class TestCommandToMcpTool:
         assert props["status"]["enum"] == ["active", "inactive"]
 
         assert tool["inputSchema"]["required"] == ["title"]
+        assert tool["_meta"]["mutation"] is True
+        assert tool["_meta"]["requires"] == ["auth-login"]
+        assert tool["_meta"]["contexts"] == ["workspace"]
+        assert tool["_meta"]["outputSchema"]["properties"]["id"]["type"] == "string"
+        assert tool["_meta"]["examples"] == [{"title": "Basic", "input": {"title": "Example"}}]

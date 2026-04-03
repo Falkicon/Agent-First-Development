@@ -19,6 +19,7 @@ Example:
 """
 
 from dataclasses import dataclass, field
+import re
 from typing import (
     Any,
     Awaitable,
@@ -29,12 +30,11 @@ from typing import (
     Optional,
     Protocol,
     TypeVar,
-    Union,
 )
 
-from pydantic import BaseModel
-
 from afd.core.result import CommandResult
+
+COMMAND_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(-[a-z][a-z0-9]*)+$")
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,22 @@ DEFAULT_EXPOSE = ExposeOptions()
 
 TInput = TypeVar("TInput")
 TOutput = TypeVar("TOutput")
+JsonSchema = Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CommandExample:
+    """Normalized command example for docs and MCP metadata.
+
+    Attributes:
+        input: Example input payload.
+        title: Optional short label for the example.
+        description: Optional longer explanation for the example.
+    """
+
+    input: Dict[str, Any]
+    title: Optional[str] = None
+    description: Optional[str] = None
 
 
 @dataclass
@@ -83,6 +99,7 @@ class CommandParameter:
     required: bool = False
     default: Optional[Any] = None
     enum: Optional[List[Any]] = None
+    schema: Optional[JsonSchema] = None
 
 
 @dataclass
@@ -150,13 +167,17 @@ class CommandDefinition:
     handler: CommandHandler
     category: Optional[str] = None
     parameters: List[CommandParameter] = field(default_factory=list)
+    input_schema: Optional[JsonSchema] = None
     returns_description: Optional[str] = None
+    returns: Optional[JsonSchema] = None
     errors: Optional[List[str]] = None
     version: Optional[str] = None
     tags: Optional[List[str]] = None
     mutation: bool = False
     execution_time: Optional[Literal["instant", "fast", "slow", "long-running"]] = None
-    examples: Optional[List[Dict[str, Any]]] = None
+    examples: List[CommandExample] = field(default_factory=list)
+    requires: List[str] = field(default_factory=list)
+    contexts: List[str] = field(default_factory=list)
     handoff: bool = False
     handoff_protocol: Optional[str] = None
     expose: Optional[ExposeOptions] = None
@@ -311,6 +332,24 @@ class _CommandRegistryImpl:
                     ),
                 )
 
+        if context and "active_context" in context.extra:
+            active_context = context.extra["active_context"]
+            if active_context and command.contexts and active_context not in command.contexts:
+                return CommandResult(
+                    success=False,
+                    error=CmdError(
+                        code="COMMAND_NOT_IN_CONTEXT",
+                        message=(
+                            f"Command '{name}' is not available in context "
+                            f"'{active_context}'"
+                        ),
+                        suggestion=(
+                            "Use afd-context-list to inspect available contexts or "
+                            "afd-context-enter to switch."
+                        ),
+                    ),
+                )
+
         try:
             result = await command.handler(input, context)
             return result
@@ -339,6 +378,22 @@ def create_command_registry() -> CommandRegistry:
     return _CommandRegistryImpl()
 
 
+def validate_command_name(name: str) -> dict[str, Any]:
+    """Validate command naming against the shared `domain-action` contract."""
+
+    if not name:
+        return {"valid": False, "reason": "Command name must not be empty"}
+    if not COMMAND_NAME_PATTERN.fullmatch(name):
+        return {
+            "valid": False,
+            "reason": (
+                f"Command name '{name}' must use kebab-case with at least two "
+                "segments (e.g., 'domain-action')."
+            ),
+        }
+    return {"valid": True}
+
+
 def command_to_mcp_tool(command: CommandDefinition) -> dict[str, Any]:
     """Convert a CommandDefinition to MCP tool format.
     
@@ -355,29 +410,60 @@ def command_to_mcp_tool(command: CommandDefinition) -> dict[str, Any]:
         >>> tool["name"]
         'my-command'
     """
-    properties: Dict[str, Dict[str, Any]] = {}
-    required: List[str] = []
+    if command.input_schema is not None:
+        input_schema = command.input_schema
+    else:
+        properties: Dict[str, Dict[str, Any]] = {}
+        required: List[str] = []
 
-    for param in command.parameters:
-        prop: Dict[str, Any] = {
-            "type": param.type,
-            "description": param.description,
-        }
-        if param.default is not None:
-            prop["default"] = param.default
-        if param.enum is not None:
-            prop["enum"] = param.enum
-        properties[param.name] = prop
+        for param in command.parameters:
+            prop: Dict[str, Any] = dict(param.schema or {})
+            prop.setdefault("type", param.type)
+            prop.setdefault("description", param.description)
+            if param.default is not None and "default" not in prop:
+                prop["default"] = param.default
+            if param.enum is not None and "enum" not in prop:
+                prop["enum"] = param.enum
+            properties[param.name] = prop
 
-        if param.required:
-            required.append(param.name)
+            if param.required:
+                required.append(param.name)
 
-    return {
-        "name": command.name,
-        "description": command.description,
-        "inputSchema": {
+        input_schema = {
             "type": "object",
             "properties": properties,
             "required": required,
-        },
+        }
+
+    tool = {
+        "name": command.name,
+        "description": command.description,
+        "inputSchema": input_schema,
     }
+
+    meta: Dict[str, Any] = {"mutation": command.mutation}
+    if command.requires:
+        meta["requires"] = list(command.requires)
+    if command.examples:
+        meta["examples"] = serialize_command_examples(command.examples)
+    if command.returns:
+        meta["outputSchema"] = command.returns
+    if command.contexts:
+        meta["contexts"] = list(command.contexts)
+
+    if meta:
+        tool["_meta"] = meta
+
+    return tool
+
+
+def serialize_command_examples(examples: List[CommandExample]) -> List[Dict[str, Any]]:
+    """Convert normalized examples to JSON-serializable dictionaries."""
+    return [
+        {
+            **({"title": example.title} if example.title else {}),
+            **({"description": example.description} if example.description else {}),
+            "input": example.input,
+        }
+        for example in examples
+    ]

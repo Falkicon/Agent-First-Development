@@ -110,8 +110,13 @@ from afd.core.batch import (
     is_batch_command,
 )
 from afd.core.commands import (
+    CommandExample,
     ExposeOptions,
     DEFAULT_EXPOSE,
+    JsonSchema,
+    command_to_mcp_tool,
+    serialize_command_examples,
+    validate_command_name,
 )
 from afd.core.mcp_types import (
     MCP_PROTOCOL_VERSION,
@@ -312,6 +317,11 @@ __all__ = [
     # Expose options
     "ExposeOptions",
     "DEFAULT_EXPOSE",
+    "CommandExample",
+    "JsonSchema",
+    "command_to_mcp_tool",
+    "serialize_command_examples",
+    "validate_command_name",
     # MCP protocol types
     "MCP_PROTOCOL_VERSION",
     "JSONRPC_VERSION",
@@ -433,4 +443,3 @@ __all__ = [
     "WebSocketHandoffHandler",
     "SseHandoffHandler",
 ]
-

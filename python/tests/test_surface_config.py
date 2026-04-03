@@ -1,5 +1,6 @@
 """Tests for input normalization, option toggles, and edge cases."""
 
+from afd.core.commands import CommandDefinition
 from afd.testing.surface.similarity import STOP_WORDS
 from afd.testing.surface.types import (
 	ComplexityBreakdown,
@@ -17,7 +18,9 @@ def _cmd(
 	*,
 	category: str | None = None,
 	json_schema: dict | None = None,
+	output_json_schema: dict | None = None,
 	requires: list[str] | None = None,
+	contexts: list[str] | None = None,
 ) -> SurfaceCommand:
 	"""Shorthand for creating a SurfaceCommand."""
 	return SurfaceCommand(
@@ -25,7 +28,9 @@ def _cmd(
 		description=description,
 		category=category,
 		json_schema=json_schema,
+		output_json_schema=output_json_schema,
 		requires=requires,
+		contexts=contexts,
 	)
 
 
@@ -148,6 +153,29 @@ class TestInputNormalization:
 		unresolved = [f for f in result.findings if f.rule == "unresolved-prerequisite"]
 		assert len(unresolved) == 0
 
+	def test_reads_returns_and_contexts_from_command_definition(self):
+		async def handler(input, context=None):
+			return None
+
+		commands = [
+			CommandDefinition(
+				name="user-create",
+				description="Creates a new user account in the system",
+				handler=handler,
+				returns={"type": "object", "properties": {"id": {"type": "string"}}},
+				contexts=["editing"],
+			),
+		]
+		result = validate_command_surface(
+			commands,
+			SurfaceValidationOptions(configured_contexts=["editing"]),
+		)
+		rules = set(result.summary.rules_evaluated)
+		assert "missing-output-schema" in rules
+		assert "missing-context" in rules
+		assert not any(f.rule == "missing-output-schema" for f in result.findings)
+		assert not any(f.rule == "missing-context" for f in result.findings)
+
 
 class TestOptionToggles:
 	"""Tests for disabling specific checks via options."""
@@ -183,12 +211,18 @@ class TestOptionToggles:
 		assert "schema-complexity" not in result.summary.rules_evaluated
 
 	def test_default_options_enable_all(self):
-		"""Default options should enable all 11 rules."""
+		"""Default options should enable all default rules."""
 		commands = [
 			_cmd("user-create", "Creates a new user account in the system", category="users"),
 		]
 		result = validate_command_surface(commands)
-		assert len(result.summary.rules_evaluated) == 11
+		assert len(result.summary.rules_evaluated) == 12
+
+	def test_configured_contexts_enable_missing_context_rule(self):
+		commands = [_cmd("user-create", "Creates a new user account in the system")]
+		opts = SurfaceValidationOptions(configured_contexts=["editing"])
+		result = validate_command_surface(commands, opts)
+		assert "missing-context" in result.summary.rules_evaluated
 
 
 class TestEdgeCases:

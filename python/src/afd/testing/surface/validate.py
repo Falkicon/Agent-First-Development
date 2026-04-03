@@ -16,6 +16,8 @@ from afd.testing.surface.rules import (
 	check_description_injection,
 	check_description_quality,
 	check_missing_category,
+	check_missing_context,
+	check_missing_output_schema,
 	check_naming_collision,
 	check_naming_convention,
 	check_orphaned_category,
@@ -47,7 +49,13 @@ def _normalize_commands(commands: list[Any]) -> list[SurfaceCommand]:
 				description=str(cmd.get("description", "")),
 				category=cmd.get("category"),
 				json_schema=cmd.get("jsonSchema") or cmd.get("json_schema"),
+				output_json_schema=(
+					cmd.get("outputJsonSchema")
+					or cmd.get("output_schema")
+					or cmd.get("returns")
+				),
 				requires=cmd.get("requires"),
+				contexts=cmd.get("contexts"),
 			))
 			continue
 
@@ -57,20 +65,32 @@ def _normalize_commands(commands: list[Any]) -> list[SurfaceCommand]:
 		category = getattr(cmd, "category", None)
 
 		# Check for jsonSchema (Zod-style) or json_schema or parameters
-		json_schema = getattr(cmd, "jsonSchema", None) or getattr(cmd, "json_schema", None)
+		json_schema = (
+			getattr(cmd, "jsonSchema", None)
+			or getattr(cmd, "json_schema", None)
+			or getattr(cmd, "input_schema", None)
+		)
+		output_json_schema = (
+			getattr(cmd, "outputJsonSchema", None)
+			or getattr(cmd, "output_json_schema", None)
+			or getattr(cmd, "returns", None)
+		)
 		if json_schema is None and hasattr(cmd, "parameters"):
 			params = getattr(cmd, "parameters", None)
 			if isinstance(params, list):
 				json_schema = _parameters_to_json_schema(params)
 
 		requires = getattr(cmd, "requires", None)
+		contexts = getattr(cmd, "contexts", None)
 
 		result.append(SurfaceCommand(
 			name=str(name),
 			description=str(description),
 			category=category,
 			json_schema=json_schema,
+			output_json_schema=output_json_schema,
 			requires=requires,
+			contexts=contexts,
 		))
 
 	return result
@@ -92,10 +112,9 @@ def _parameters_to_json_schema(params: list[Any]) -> dict[str, Any]:
 				required.append(name)
 		else:
 			name = getattr(param, "name", "")
-			properties[name] = {
-				"type": getattr(param, "type", "string"),
-				"description": getattr(param, "description", ""),
-			}
+			properties[name] = dict(getattr(param, "schema", None) or {})
+			properties[name].setdefault("type", getattr(param, "type", "string"))
+			properties[name].setdefault("description", getattr(param, "description", ""))
 			if getattr(param, "required", False):
 				required.append(name)
 
@@ -168,6 +187,7 @@ def validate_command_surface(
 	additional_injection_patterns = opts.additional_injection_patterns
 	check_complexity = opts.check_schema_complexity
 	schema_complexity_threshold = opts.schema_complexity_threshold
+	configured_contexts = opts.configured_contexts or []
 
 	# Normalize input
 	normalized = _normalize_commands(commands)
@@ -232,6 +252,15 @@ def validate_command_surface(
 	# Always run: circular-prerequisite
 	rules_evaluated.append("circular-prerequisite")
 	all_findings.extend(check_circular_prerequisites(normalized))
+
+	# Always run: missing-output-schema
+	rules_evaluated.append("missing-output-schema")
+	all_findings.extend(check_missing_output_schema(normalized))
+
+	# Missing context only when configured contexts are supplied
+	if configured_contexts:
+		rules_evaluated.append("missing-context")
+		all_findings.extend(check_missing_context(normalized, configured_contexts))
 
 	# Apply suppressions
 	suppressed_count = 0

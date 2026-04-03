@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Python AFD functional parity for framework-agnostic, agent-visible features:
+  - first-class command metadata for output schemas, prerequisites, contexts, validated examples, and explicit grouping categories
+  - server tool strategies for `individual`, `grouped`, and `lazy` discovery, including `afd-call`, `afd-batch`, `afd-pipe`, `afd-discover`, and `afd-detail`
+  - context bootstrap commands (`afd-context-list`, `afd-context-enter`, `afd-context-exit`) plus context-aware discovery and actionable stale-call errors
+  - richer bootstrap surfaces in `afd-help`, `afd-docs`, and `afd-schema`, plus Python surface-validation support for missing output schemas and missing configured contexts
+
+### Changed
+- Documented the Python parity target as functional AFD parity across framework-agnostic capabilities and agent-visible behavior, with language-specific APIs allowed to differ when that better fits the host language
+- Updated AFD skill guidance to keep parity decisions aligned across TypeScript, Python, and Rust implementations
+- Clarified that Changesets cover released `@lushly-dev/*` npm packages, while Python-only work follows the separate PyPI release flow
+
 ## [0.6.0] - 2026-03-13
 
 ### Changed

@@ -18,21 +18,25 @@ from afd.transports._mcp_protocol import _HttpBasedTransport
 class TestUrlDerivation:
     """Tests for message URL derivation."""
 
-    def test_sse_url_becomes_message(self):
+    def test_sse_url_becomes_messages_endpoint(self):
         t = HttpTransport("http://localhost:3100/sse")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
-    def test_message_url_kept(self):
+    def test_message_url_normalizes_to_messages_endpoint(self):
         t = HttpTransport("http://localhost:3100/message")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
-    def test_bare_url_gets_message(self):
+    def test_messages_url_kept(self):
+        t = HttpTransport("http://localhost:3100/messages/")
+        assert t._message_url == "http://localhost:3100/messages/"
+
+    def test_bare_url_gets_messages_endpoint(self):
         t = HttpTransport("http://localhost:3100")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
     def test_trailing_slash(self):
         t = HttpTransport("http://localhost:3100/")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
 
 # ============================================================================

@@ -15,6 +15,15 @@ description: >
 
 Patterns for implementing AFD commands in TypeScript.
 
+## Parity Rule
+
+TypeScript often serves as the reference implementation for the shared AFD surface, but parity SHOULD still be defined by framework-agnostic capabilities and agent-visible behavior rather than literal module symmetry.
+
+- Core AFD surfaces MUST stay framework-agnostic.
+- React or browser integrations SHOULD stay in examples or ecosystem layers.
+- Cross-language implementations MAY use idiomatic APIs when they preserve the same command contract and behavior.
+- Shared parity features to keep aligned include output schemas, validated examples, prerequisite metadata, context scoping, grouped/lazy discovery strategies, and the `afd-call` / `afd-batch` / `afd-pipe` / `afd-discover` / `afd-detail` tool family.
+
 ## Package Imports
 
 ```typescript
@@ -306,6 +315,8 @@ const server = createMcpServer({
   toolStrategy: 'lazy',  // Exposes afd-discover, afd-detail, afd-call, afd-batch, afd-pipe
 });
 ```
+
+The expected agent workflow in lazy mode is `afd-discover -> afd-detail -> afd-call`. `afd-call`, `afd-batch`, and `afd-pipe` remain available across all tool strategies; `lazy` just keeps discovery constant-cost for large command sets.
 
 ### With Contexts
 

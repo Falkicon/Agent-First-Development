@@ -23,17 +23,18 @@ Expert guidance for building software with the Agent-First Development methodolo
 
 ## Capabilities
 
-1. **Command Design** — Define commands with Zod schemas, proper error handling, and UX-enabling metadata
+1. **Command Design** — Define commands with typed schemas, proper error handling, and UX-enabling metadata
 2. **CLI Validation** — Test commands via CLI before building UI
 3. **MCP Integration** — Set up MCP servers and connect clients
 4. **Testing** — Unit tests, performance tests, AFD compliance checks, and surface validation
-5. **FAST Element Integration** — Connect commands to FAST Element components
+5. **Functional Parity** — Prefer shared AFD capabilities and agent-visible behavior over literal package symmetry; keep the command layer framework-agnostic
+6. **Ecosystem Integration Boundaries** — Keep UI/framework integrations in examples or ecosystem layers rather than the core AFD surface
 
 ## Routing Logic
 
 | Request type | Load reference |
 |--------------|----------------|
-| Command schemas, Zod patterns | [references/command-design.md](references/command-design.md) |
+| Command schemas, typed schema patterns | [references/command-design.md](references/command-design.md) |
 | CommandResult interface, UX fields, batch patterns | [references/command-schema.md](references/command-schema.md) |
 | MCP server setup, transports, embeddable Node handler | [references/mcp-integration.md](references/mcp-integration.md) |
 | Testing commands, performance | [references/testing.md](references/testing.md) |
@@ -51,7 +52,16 @@ Expert guidance for building software with the Agent-First Development methodolo
 | Cross-platform exec, connectors | [references/platform-utils.md](references/platform-utils.md) |
 | Command prerequisites, `requires` field | [references/command-schema.md](references/command-schema.md) |
 | Surface validation, semantic quality | [references/surface-validation.md](references/surface-validation.md) |
-| View state, UI panels, ViewStateRegistry | `packages/view-state/README.md` |
+
+### Functional Parity Rule
+
+When comparing implementations across TypeScript, Python, and Rust, treat parity as a shared capability contract, not a promise that every API or module name will match exactly.
+
+- Core AFD surfaces MUST stay framework-agnostic.
+- React or browser integrations SHOULD live in examples or ecosystem layers.
+- Cross-language implementations MAY choose idiomatic signatures, schemas, or module boundaries when that better fits the host language.
+- New features SHOULD be judged first by whether they change agent-visible behavior, then by whether they belong in the shared AFD surface.
+- Shared parity examples include output schemas, validated examples, prerequisite metadata, context scoping, grouped/lazy tool strategies, and meta-tools such as `afd-call`, `afd-batch`, `afd-pipe`, `afd-discover`, and `afd-detail`.
 
 ## Core Principles
 
@@ -75,6 +85,8 @@ const createItem = defineCommand({
 
 // Step 3: Build UI (only after CLI works)
 ```
+
+TypeScript is shown here for brevity, but the command-first workflow is the invariant. Python uses Pydantic-based command definitions and Rust uses JSON Schema-backed command definitions while preserving the same agent-facing contract.
 
 ### 2. The Honesty Check
 
@@ -121,6 +133,11 @@ return error('NOT_FOUND', `Item ${id} not found`, {
 | Error response | `error(code, message, { suggestion })` |
 | Test via CLI | `afd call <command> '<json>'` |
 | List commands | `afd tools` |
+| Rich command metadata | Add `output` / `output_schema`, `requires`, `contexts`, and `examples` |
+| Large command surfaces | Use `individual`, `grouped`, or `lazy` tool strategies |
+| Lazy agent workflow | `afd-discover -> afd-detail -> afd-call` |
+| Runtime dispatch | `afd-call`, `afd-batch`, `afd-pipe`, `afd-discover`, `afd-detail` |
+| Context scoping | `afd-context-list`, `afd-context-enter`, `afd-context-exit` |
 | Create standalone MCP server | `const server = createMcpServer({ commands }); await server.start()` |
 | Embed MCP into existing Node host | `const handler = createMcpHandler({ commands })` |
 
@@ -151,7 +168,7 @@ return error('NOT_FOUND', `Item ${id} not found`, {
 | `@lushly-dev/afd-client` | MCP client with SSE/HTTP transports + DirectClient |
 | `@lushly-dev/afd-testing` | JTBD scenario runner, surface validation, test validators |
 | `@lushly-dev/afd-adapters` | Frontend adapters for rendering CommandResult |
-| `@lushly-dev/afd-view-state` | UI view state management via commands (ViewStateRegistry, createViewStateCommands) |
+| `@lushly-dev/afd-view-state` | Ecosystem-level UI view state management via commands; not part of the core cross-language parity surface |
 | `@lushly-dev/afd-cli` | Command-line interface |
 | `@lushly-dev/local-db` | Async data adapter with swappable backends (Memory, HTTP) |
 

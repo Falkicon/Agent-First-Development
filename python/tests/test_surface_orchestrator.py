@@ -2,6 +2,8 @@
 
 from afd.testing.surface.rules import (
 	check_circular_prerequisites,
+	check_missing_context,
+	check_missing_output_schema,
 	check_unresolved_prerequisites,
 )
 from afd.testing.surface.types import (
@@ -18,7 +20,9 @@ def _cmd(
 	*,
 	category: str | None = None,
 	json_schema: dict | None = None,
+	output_json_schema: dict | None = None,
 	requires: list[str] | None = None,
+	contexts: list[str] | None = None,
 ) -> SurfaceCommand:
 	"""Shorthand for creating a SurfaceCommand."""
 	return SurfaceCommand(
@@ -26,7 +30,9 @@ def _cmd(
 		description=description,
 		category=category,
 		json_schema=json_schema,
+		output_json_schema=output_json_schema,
 		requires=requires,
+		contexts=contexts,
 	)
 
 
@@ -115,6 +121,20 @@ class TestCheckCircularPrerequisites:
 		assert len(findings) >= 1
 
 
+class TestMissingOutputAndContextRules:
+	"""Tests for missing-output-schema and missing-context integration."""
+
+	def test_missing_output_schema_rule(self):
+		findings = check_missing_output_schema([_cmd("todo-list")])
+		assert len(findings) == 1
+		assert findings[0].rule == "missing-output-schema"
+
+	def test_missing_context_rule(self):
+		findings = check_missing_context([_cmd("todo-list")], ["editing"])
+		assert len(findings) == 1
+		assert findings[0].rule == "missing-context"
+
+
 class TestValidateCommandSurface:
 	"""Tests for the validate_command_surface orchestrator."""
 
@@ -181,7 +201,7 @@ class TestValidateCommandSurface:
 		result = validate_command_surface(commands)
 		assert "similar-descriptions" in result.summary.rules_evaluated
 		assert "naming-convention" in result.summary.rules_evaluated
-		assert len(result.summary.rules_evaluated) == 11
+		assert len(result.summary.rules_evaluated) == 12
 
 	def test_duration_ms_set(self):
 		"""duration_ms should be a non-negative number."""

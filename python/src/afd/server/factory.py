@@ -1,59 +1,29 @@
-"""Server factory for creating AFD MCP servers.
+"""Server factory for creating AFD MCP servers."""
 
-The create_server() function is the main entry point for building
-AFD applications that expose commands via MCP.
+from __future__ import annotations
 
-Example:
-    >>> from afd.server import create_server
-    >>> from afd import success
-    >>> from pydantic import BaseModel
-    >>> 
-    >>> server = create_server("my-app", version="1.0.0")
-    >>> 
-    >>> class PingInput(BaseModel):
-    ...     message: str = "ping"
-    >>> 
-    >>> @server.command(
-    ...     name="ping",
-    ...     description="Echo a message back",
-    ...     input_schema=PingInput,
-    ... )
-    ... async def ping(input: PingInput):
-    ...     from afd import success
-    ...     return success({"message": f"pong: {input.message}"})
-    >>> 
-    >>> # Run the server
-    >>> server.run()
-"""
-
-import sys
-
+import json
+import time
 from dataclasses import dataclass, field
-from typing import (
-    Any,
-    Awaitable,
-    Callable,
-    Dict,
-    List,
-    Optional,
-    Protocol,
-    Type,
-    TypeVar,
-    Union,
-    runtime_checkable,
-)
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional, Protocol, Type, TypeVar, runtime_checkable
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field, create_model
 
+from afd.core.batch import BatchCommandResult, BatchRequest, BatchTiming, create_batch_result, create_failed_batch_result
 from afd.core.commands import (
     CommandContext,
     CommandDefinition,
+    CommandExample,
     CommandRegistry,
     DEFAULT_EXPOSE,
     ExposeOptions,
     create_command_registry,
 )
-from afd.core.result import CommandResult
+from afd.core.errors import CommandError
+from afd.core.pipeline import PipelineRequest, execute_pipeline
+from afd.core.result import CommandResult, error
+from afd.server.bootstrap import ContextState, create_context_state, get_bootstrap_commands
 from afd.server.decorators import (
     CommandMetadata,
     command_to_definition,
@@ -62,7 +32,9 @@ from afd.server.decorators import (
     has_command_metadata,
 )
 from afd.server.middleware import CommandMiddleware
-
+from afd.server.tool_router import ToolRouterDeps, create_tool_router
+from afd.server.tools import filter_commands_by_context, get_tools_list
+from afd.server.types import ContextConfig, GroupByFn, ToolStrategy
 
 TInput = TypeVar("TInput", bound=BaseModel)
 TOutput = TypeVar("TOutput")
@@ -70,361 +42,578 @@ TOutput = TypeVar("TOutput")
 
 @runtime_checkable
 class MCPTransport(Protocol):
-    """Protocol for MCP transport implementations.
-    
-    Transports handle the communication layer for MCP. The default
-    is FastMCP, but this abstraction allows swapping implementations.
-    """
-    
+    """Protocol for MCP transport implementations."""
+
     async def start(self) -> None:
-        """Start the transport."""
         ...
-    
+
     async def stop(self) -> None:
-        """Stop the transport."""
         ...
 
 
 @dataclass
 class ServerConfig:
-    """Configuration for an AFD server.
-
-    Attributes:
-        name: Server name (shown to clients).
-        version: Server version string.
-        description: Optional server description.
-        transport: Transport implementation to use.
-        middleware: List of middleware functions to wrap command execution.
-    """
+    """Configuration for an AFD server."""
 
     name: str
     version: str = "1.0.0"
     description: Optional[str] = None
-    transport: Optional[str] = "fastmcp"  # "fastmcp", "stdio", or custom
+    transport: Optional[str] = "fastmcp"
     middleware: List[CommandMiddleware] = field(default_factory=list)
+    tool_strategy: ToolStrategy = "individual"
+    contexts: List[ContextConfig] = field(default_factory=list)
+    group_by: Optional[GroupByFn] = None
 
 
 class MCPServer:
-    """AFD MCP Server for exposing commands.
-    
-    This is the main server class that manages commands and handles
-    communication via MCP transports.
-    
-    Example:
-        >>> server = MCPServer(ServerConfig(name="my-app"))
-        >>> 
-        >>> @server.command(name="ping", description="Ping")
-        ... async def ping(input):
-        ...     return success({"status": "pong"})
-        >>> 
-        >>> server.run()
-    """
-    
-    def __init__(self, config: ServerConfig):
-        """Initialize the server.
+    """AFD MCP server for exposing commands and built-in tools."""
 
-        Args:
-            config: Server configuration.
-        """
+    def __init__(self, config: ServerConfig):
         self.config = config
         self._registry = create_command_registry()
-        self._commands: List[Callable] = []
+        self._commands: Dict[str, Callable] = {}
+        self._metadata: Dict[str, CommandMetadata] = {}
         self._mcp_server = None
         self._middleware: List[CommandMiddleware] = list(config.middleware)
-    
+        self._context_state: ContextState = create_context_state()
+        self._bootstrap_commands: Optional[List[CommandDefinition]] = None
+
     @property
     def name(self) -> str:
-        """Get server name."""
         return self.config.name
-    
+
     @property
     def version(self) -> str:
-        """Get server version."""
         return self.config.version
-    
+
     @property
     def registry(self) -> CommandRegistry:
-        """Get the command registry."""
         return self._registry
-    
+
+    @property
+    def context_state(self) -> ContextState:
+        return self._context_state
+
+    def list_contexts(self) -> List[ContextConfig]:
+        return list(self.config.contexts)
+
     def command(
         self,
         name: str,
         description: str,
+        category: Optional[str] = None,
         input_schema: Optional[Type[BaseModel]] = None,
         output_schema: Optional[Type[BaseModel]] = None,
         tags: Optional[List[str]] = None,
         mutation: bool = False,
-        examples: Optional[List[Dict[str, Any]]] = None,
+        examples: Optional[List[CommandExample | Dict[str, Any]]] = None,
+        requires: Optional[List[str]] = None,
+        contexts: Optional[List[str]] = None,
         expose: Optional[ExposeOptions] = None,
     ) -> Callable:
-        """Decorator to register a command with this server.
+        """Decorator to register a command with this server."""
 
-        This combines @define_command with automatic registration.
-
-        Args:
-            name: Command name (use kebab-case).
-            description: What the command does.
-            input_schema: Pydantic model for input validation.
-            output_schema: Pydantic model for output.
-            tags: Tags for categorization.
-            mutation: Whether command modifies state.
-            examples: Example inputs.
-            expose: Controls which interfaces this command is exposed to.
-
-        Returns:
-            Decorator function.
-
-        Example:
-            >>> @server.command(
-            ...     name="user-get",
-            ...     description="Get a user by ID",
-            ...     input_schema=GetUserInput,
-            ...     expose=ExposeOptions(mcp=True),
-            ... )
-            ... async def get_user(input: GetUserInput):
-            ...     return success({"id": input.id, "name": "John"})
-        """
         def decorator(func: Callable) -> Callable:
-            # Apply the define_command decorator
             decorated = define_command(
                 name=name,
                 description=description,
+                category=category,
                 input_schema=input_schema,
                 output_schema=output_schema,
                 tags=tags,
                 mutation=mutation,
                 examples=examples,
+                requires=requires,
+                contexts=contexts,
                 expose=expose,
             )(func)
-            
-            # Register with our registry
-            definition = command_to_definition(decorated)
-            if definition:
-                self._registry.register(definition)
-            
-            # Keep track of decorated functions
-            self._commands.append(decorated)
-            
+            self.register(decorated)
             return decorated
-        
+
         return decorator
-    
+
     def register(self, func: Callable) -> None:
-        """Register an already-decorated command function.
-        
-        Use this when the command was decorated elsewhere.
-        
-        Args:
-            func: Function decorated with @define_command.
-        
-        Example:
-            >>> @define_command(name="external", description="External command")
-            ... async def external_cmd(input):
-            ...     return success({})
-            >>> 
-            >>> server.register(external_cmd)
-        """
+        """Register an already-decorated command function."""
+
         if not has_command_metadata(func):
-            raise ValueError(
-                f"Function {func.__name__} is not decorated with @define_command"
-            )
-        
+            raise ValueError(f"Function {func.__name__} is not decorated with @define_command")
+
         definition = command_to_definition(func)
-        if definition:
-            self._registry.register(definition)
-            self._commands.append(func)
-    
-    def list_commands(self) -> List[CommandDefinition]:
-        """List all registered commands."""
-        return self._registry.list()
-    
-    async def execute(
+        metadata = get_command_metadata(func)
+        if definition is None or metadata is None:
+            raise ValueError(f"Function {func.__name__} is missing command metadata")
+
+        self._registry.register(definition)
+        self._commands[definition.name] = func
+        self._metadata[definition.name] = metadata
+        self._sync_mcp_tool_definitions()
+
+    def _get_bootstrap_commands(self) -> List[CommandDefinition]:
+        if self._bootstrap_commands is None:
+            options: Dict[str, Any] = {
+                "get_json_schema": lambda command: command.input_schema or {},
+            }
+            if self.config.contexts:
+                options["get_contexts"] = self.list_contexts
+                options["context_state"] = self._context_state
+            self._bootstrap_commands = get_bootstrap_commands(
+                lambda: self.list_commands(include_bootstrap=True, context_filtered=True),
+                options=options,
+            )
+        return list(self._bootstrap_commands)
+
+    def list_commands(
+        self,
+        *,
+        include_bootstrap: bool = False,
+        context_filtered: bool = False,
+    ) -> List[CommandDefinition]:
+        """List registered commands."""
+
+        commands = list(self._registry.list())
+        if include_bootstrap:
+            commands.extend(self._get_bootstrap_commands())
+        if context_filtered:
+            commands = filter_commands_by_context(commands, self._context_state.get_active())
+        return commands
+
+    def _find_command(
+        self,
+        name: str,
+        *,
+        include_bootstrap: bool = True,
+        context_filtered: bool = False,
+    ) -> Optional[CommandDefinition]:
+        for command in self.list_commands(include_bootstrap=include_bootstrap, context_filtered=context_filtered):
+            if command.name == name:
+                return command
+        return None
+
+    def _is_exposed_to(self, command: CommandDefinition, interface: str) -> bool:
+        expose = command.expose if command.expose is not None else DEFAULT_EXPOSE
+        return bool(getattr(expose, interface, False))
+
+    def list_exposed_commands(
+        self,
+        *,
+        interface: str = "mcp",
+        include_bootstrap: bool = True,
+        context_filtered: bool = False,
+    ) -> List[CommandDefinition]:
+        """List commands exposed on a specific interface."""
+
+        return [
+            command
+            for command in self.list_commands(
+                include_bootstrap=include_bootstrap,
+                context_filtered=context_filtered,
+            )
+            if self._is_exposed_to(command, interface)
+        ]
+
+    async def _invoke_command(
+        self,
+        command: CommandDefinition,
+        input: Any,
+        context: Optional[CommandContext] = None,
+    ) -> CommandResult:
+        context = context or CommandContext()
+
+        interface = context.extra.get("interface") if context.extra else None
+        if interface:
+            if interface not in {"palette", "mcp", "agent", "cli"}:
+                return error(
+                    "INVALID_INTERFACE",
+                    f"Unknown interface '{interface}'",
+                    suggestion="Valid interfaces: agent, cli, mcp, palette",
+                )
+            if not self._is_exposed_to(command, interface):
+                return error(
+                    "COMMAND_NOT_EXPOSED",
+                    f"Command '{command.name}' is not exposed to {interface}",
+                    suggestion="Check command exposure settings or use a different interface.",
+                )
+
+        active_context = self._context_state.get_active()
+        if active_context and command.contexts and active_context not in command.contexts:
+            return error(
+                "COMMAND_NOT_IN_CONTEXT",
+                f"Command '{command.name}' is not available in context '{active_context}'",
+                suggestion="Use afd-context-list to inspect contexts, or afd-context-enter to switch.",
+            )
+
+        try:
+            return await command.handler(input, context)
+        except Exception as exc:  # pragma: no cover - exercised via tests
+            return error(
+                "COMMAND_EXECUTION_ERROR",
+                str(exc),
+                suggestion="Check the input parameters and try again.",
+            )
+
+    async def _execute_command_direct(
         self,
         name: str,
         input: Any,
         context: Optional[CommandContext] = None,
     ) -> CommandResult:
-        """Execute a command by name.
+        command = self._find_command(name, include_bootstrap=True, context_filtered=True)
+        if command is None:
+            if self._find_command(name, include_bootstrap=True, context_filtered=False) is not None:
+                active_context = self._context_state.get_active() or "unknown"
+                return error(
+                    "COMMAND_NOT_IN_CONTEXT",
+                    f"Command '{name}' is not available in context '{active_context}'",
+                    suggestion="Use afd-context-list to inspect contexts, or afd-context-enter to switch.",
+                )
+            return error(
+                "COMMAND_NOT_FOUND",
+                f"Command '{name}' not found",
+                suggestion="Use afd-help or afd-discover to inspect available commands.",
+            )
+        return await self._invoke_command(command, input, context)
 
-        Wraps the registry call with the configured middleware chain.
+    async def execute(
+        self,
+        name: str,
+        input: Any,
+        context: Optional[CommandContext] = None,
+    ) -> Any:
+        """Execute a command or built-in tool by name."""
 
-        Args:
-            name: Command name.
-            input: Command input.
-            context: Optional execution context.
+        if name in {"afd-call", "afd-batch", "afd-pipe", "afd-discover", "afd-detail"}:
+            return await self.route_tool_call(name, input)
 
-        Returns:
-            CommandResult from the command handler.
-        """
-        if context is None:
-            context = CommandContext()
+        context = context or CommandContext()
 
         if not self._middleware:
-            return await self._registry.execute(name, input, context)
+            result = await self._execute_command_direct(name, input, context)
+            self._refresh_dynamic_tools(name, result)
+            return result
 
-        # Build the middleware chain (innermost = registry.execute)
         async def run_handler() -> CommandResult:
-            return await self._registry.execute(name, input, context)
+            return await self._execute_command_direct(name, input, context)
 
         next_fn = run_handler
-        for mw in reversed(self._middleware):
-            # Lambda factory avoids Python closure-in-loop bug
+        for middleware in reversed(self._middleware):
             current_next = next_fn
-            next_fn = (lambda m, n: (lambda: m(name, input, context, n)))(mw, current_next)
+            next_fn = (lambda mw, nxt: (lambda: mw(name, input, context, nxt)))(middleware, current_next)
 
-        return await next_fn()
-    
-    def _create_mcp_server(self):
-        """Create the underlying MCP server instance.
+        result = await next_fn()
+        self._refresh_dynamic_tools(name, result)
+        return result
 
-        Only commands with ``expose.mcp == True`` (or no explicit expose,
-        which defaults to ``DEFAULT_EXPOSE``) are registered as MCP tools.
-        """
-        try:
-            from mcp.server.fastmcp import FastMCP
+    def _refresh_dynamic_tools(self, name: str, result: Any) -> None:
+        """Refresh live MCP tool registration after context-changing commands."""
 
-            self._mcp_server = FastMCP(self.config.name)
+        if (
+            self._mcp_server is not None
+            and name in {"afd-context-enter", "afd-context-exit"}
+            and isinstance(result, CommandResult)
+            and result.success
+        ):
+            self._sync_mcp_tool_definitions()
 
-            # Register commands as MCP tools, respecting expose options
-            for cmd in self._commands:
-                metadata = get_command_metadata(cmd)
-                if metadata:
-                    expose = metadata.expose if metadata.expose is not None else DEFAULT_EXPOSE
-                    if expose.mcp:
-                        self._register_mcp_tool(cmd, metadata)
+    def _install_fastmcp_context_error_translation(self) -> None:
+        """Translate stale direct tool calls into actionable context errors when possible."""
 
-            return self._mcp_server
-        except ImportError:
-            raise ImportError(
-                "FastMCP not installed. Install with: pip install afd[server]"
+        if self._mcp_server is None:
+            return
+
+        tool_manager = getattr(self._mcp_server, "_tool_manager", None)
+        if tool_manager is None or getattr(tool_manager, "_afd_context_error_translation", False):
+            return
+
+        original_call_tool = tool_manager.call_tool
+        server = self
+
+        async def wrapped_call_tool(
+            name: str,
+            arguments: dict[str, Any],
+            context: Any = None,
+            convert_result: bool = False,
+        ) -> Any:
+            tool = tool_manager.get_tool(name)
+            if tool is None:
+                active_context = server._context_state.get_active()
+                registered = server._find_command(name, include_bootstrap=True, context_filtered=False)
+                visible = server._find_command(name, include_bootstrap=True, context_filtered=True)
+                if (
+                    active_context
+                    and registered is not None
+                    and visible is None
+                    and registered.contexts
+                    and active_context not in registered.contexts
+                ):
+                    from mcp.server.fastmcp.exceptions import ToolError
+
+                    raise ToolError(
+                        f"Command '{name}' is not available in context '{active_context}'"
+                    )
+
+            return await original_call_tool(
+                name,
+                arguments,
+                context=context,
+                convert_result=convert_result,
             )
-    
-    def _register_mcp_tool(self, func: Callable, metadata: CommandMetadata) -> None:
-        """Register a command as an MCP tool."""
+
+        tool_manager.call_tool = wrapped_call_tool
+        tool_manager._afd_context_error_translation = True
+
+    async def _execute_batch(
+        self,
+        request: BatchRequest | dict[str, Any],
+        context: Optional[CommandContext] = None,
+    ):
+        start_time = time.perf_counter()
+        started_at = datetime.now(timezone.utc).isoformat()
+        results: List[BatchCommandResult] = []
+        if not isinstance(request, BatchRequest):
+            payload = dict(request)
+            options = dict(payload.get("options") or {})
+            if "stopOnError" in options and "stop_on_error" not in options:
+                options["stop_on_error"] = options.pop("stopOnError")
+            payload["options"] = options
+            request = BatchRequest.model_validate(payload)
+
+        try:
+            for index, batch_command in enumerate(request.commands):
+                command_start = time.perf_counter()
+                command_result = await self.execute(
+                    batch_command.command,
+                    batch_command.input,
+                    context,
+                )
+                duration_ms = (time.perf_counter() - command_start) * 1000
+                results.append(
+                    BatchCommandResult(
+                        id=batch_command.id or f"cmd-{index}",
+                        index=index,
+                        command=batch_command.command,
+                        result=command_result,
+                        duration_ms=duration_ms,
+                    )
+                )
+                if request.options and request.options.stop_on_error and not command_result.success:
+                    break
+        except Exception as exc:  # pragma: no cover - defensive
+            return create_failed_batch_result(
+                CommandError(
+                    code="BATCH_EXECUTION_ERROR",
+                    message=str(exc),
+                    suggestion="Check the batch payload and retry.",
+                ),
+                total_ms=(time.perf_counter() - start_time) * 1000,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+
+        total_ms = (time.perf_counter() - start_time) * 1000
+        timing = BatchTiming(
+            total_ms=total_ms,
+            average_ms=(total_ms / len(results)) if results else 0,
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        return create_batch_result(results, timing)
+
+    async def _execute_pipeline(
+        self,
+        request: PipelineRequest | dict[str, Any],
+        context: Optional[CommandContext] = None,
+    ):
+        if not isinstance(request, PipelineRequest):
+            payload = dict(request)
+            options = dict(payload.get("options") or {})
+            if "continueOnFailure" in options and "continue_on_failure" not in options:
+                options["continue_on_failure"] = options.pop("continueOnFailure")
+            if "timeoutMs" in options and "timeout_ms" not in options:
+                options["timeout_ms"] = options.pop("timeoutMs")
+            payload["options"] = options
+            request = PipelineRequest.model_validate(payload)
+
+        async def executor(command_name: str, payload: Dict[str, Any]) -> CommandResult:
+            result = await self.execute(command_name, payload, context)
+            if not isinstance(result, CommandResult):
+                raise TypeError(f"Pipeline step '{command_name}' did not return a CommandResult")
+            return result
+
+        return await execute_pipeline(request, executor)
+
+    def _create_router(self) -> Callable[[str, Any], Any]:
+        commands = self.list_exposed_commands(interface="mcp", include_bootstrap=True, context_filtered=False)
+        return create_tool_router(
+            ToolRouterDeps(
+                execute_command=self.execute,
+                execute_batch=self._execute_batch,
+                execute_pipeline=self._execute_pipeline,
+                commands=commands,
+                tool_strategy=self.config.tool_strategy,
+                group_by_fn=self.config.group_by,
+                all_commands=self.list_commands(include_bootstrap=True, context_filtered=False),
+                exposed_command_names={command.name for command in commands},
+                context_state=self._context_state,
+            )
+        )
+
+    async def route_tool_call(self, tool_name: str, args: Any = None) -> Any:
+        """Route a tool call through the shared tool router."""
+
+        router = self._create_router()
+        return await router(tool_name, args or {})
+
+    async def call_tool(self, tool_name: str, args: Any = None) -> Any:
+        """Compatibility wrapper for invoking an MCP-visible tool directly."""
+
+        return await self.route_tool_call(tool_name, args or {})
+
+    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+        """Return the MCP-visible tool definitions for the current strategy."""
+
+        return get_tools_list(
+            self.list_exposed_commands(interface="mcp", include_bootstrap=True, context_filtered=False),
+            self.config.tool_strategy,
+            group_by_fn=self.config.group_by,
+            active_context=self._context_state.get_active(),
+        )
+
+    def get_mcp_tools(self) -> List[Dict[str, Any]]:
+        """Compatibility wrapper returning current MCP-visible tool definitions."""
+
+        return self.get_tool_definitions()
+
+    def _sync_mcp_tool_definitions(self) -> None:
+        """Rebuild the live FastMCP tool registry from the current visible surface."""
+
         if not self._mcp_server:
             return
-        
-        import json
-        from pydantic import BaseModel, ConfigDict, create_model
-        from typing import Any
-        from mcp.server.fastmcp import Context
-        from afd.server.decorators import _accepts_context
 
-        # Create the input schema
-        if metadata.input_schema:
-            input_schema = metadata.input_schema
-        else:
-            input_schema = create_model(
-                f"{metadata.name.replace('.', '_')}_Input",
-                __config__=ConfigDict(extra="allow")
+        tool_manager = getattr(self._mcp_server, "_tool_manager", None)
+        if tool_manager is None:
+            return
+
+        tool_manager._tools.clear()
+        for tool_definition in self.get_tool_definitions():
+            tool = self._create_fastmcp_tool(tool_definition)
+            tool_manager._tools[tool.name] = tool
+
+    @staticmethod
+    def _schema_annotation(schema: Dict[str, Any]) -> Any:
+        schema_type = schema.get("type")
+        if schema_type == "string":
+            return str
+        if schema_type == "integer":
+            return int
+        if schema_type == "number":
+            return float
+        if schema_type == "boolean":
+            return bool
+        if schema_type == "array":
+            return list[Any]
+        if schema_type == "object" or schema.get("properties"):
+            return dict[str, Any]
+        return Any
+
+    def _build_input_model(self, tool_name: str, schema: Dict[str, Any]) -> Type[BaseModel]:
+        from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
+
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        model_fields: Dict[str, Any] = {}
+
+        for property_name, property_schema in properties.items():
+            annotation = self._schema_annotation(property_schema)
+            default = ... if property_name in required and "default" not in property_schema else property_schema.get("default")
+            if property_name not in required:
+                annotation = Optional[annotation]
+                if default is ...:
+                    default = None
+            model_fields[property_name] = (
+                annotation,
+                Field(default=default, description=property_schema.get("description")),
             )
 
-        # We need to create a function with a specific signature so FastMCP 
-        # can correctly introspect it and generate the JSON schema.
-        # Using a closure and exec is the most reliable way to do this dynamically.
-        safe_name = metadata.name.replace('.', '_').replace('-', '_')
-        handler_name = f"handler_{safe_name}"
-        namespace = {
-            "func": func,
-            "json": json,
-            "input_schema": input_schema,
-            "CommandResult": CommandResult,
-            "Context": Context,
-            "Any": Any,
-        }
-        
-        arg_list = []
-        fields = input_schema.model_fields
-        
-        if not fields and input_schema.model_config.get("extra") == "allow":
-            arg_list.append("**kwargs")
-            if metadata.input_schema:
-                call_args_code = "input_schema(**kwargs)"
-            else:
-                call_args_code = "kwargs"
-        else:
-            for name, field in fields.items():
-                type_key = f"type_{name}"
-                namespace[type_key] = field.annotation
-                
-                # Handle defaults
-                if field.default is not None and field.default != ...:
-                    namespace[f"default_{name}"] = field.default
-                    arg_list.append(f"{name}: {type_key} = default_{name}")
-                elif field.default_factory is not None:
-                    arg_list.append(f"{name}: {type_key} = None")
-                else:
-                    # Check if required
-                    is_required = True
-                    try:
-                        is_required = field.is_required()
-                    except AttributeError:
-                        is_required = field.default == ...
-                    
-                    if is_required:
-                        arg_list.append(f"{name}: {type_key}")
-                    else:
-                        arg_list.append(f"{name}: {type_key} = None")
-            
-            field_names = list(fields.keys())
-            dict_construction = ", ".join([f"'{name}': {name}" for name in field_names])
-            if metadata.input_schema:
-                call_args_code = f"input_schema(**{{{dict_construction}}})"
-            else:
-                call_args_code = f"{{{dict_construction}}}"
-            
-        # Add context if needed
-        has_context = _accepts_context(func)
-        if has_context:
-            arg_list.append("context: Context = None")
-            
-        signature = ", ".join(arg_list)
-        
-        if has_context:
-            final_call = f"await func({call_args_code}, context=context)"
-        else:
-            final_call = f"await func({call_args_code})"
+        extra_mode = "allow" if schema.get("additionalProperties", True) else "forbid"
 
-        exec_code = f"""
-async def {handler_name}({signature}) -> str:
-    \"\"\"MCP tool handler for {metadata.name}\"\"\"
-    result = {final_call}
-    return json.dumps(result.model_dump(), default=str)
-"""
-        exec(exec_code, namespace)
-        handler = namespace[handler_name]
-        
-        # Register with FastMCP
-        self._mcp_server.tool(name=metadata.name, description=metadata.description)(handler)
+        class ToolArgModelBase(ArgModelBase):
+            def model_dump_one_level(self) -> dict[str, Any]:
+                kwargs = super().model_dump_one_level()
+                if self.model_extra:
+                    kwargs.update(self.model_extra)
+                return kwargs
+
+            model_config = ConfigDict(
+                arbitrary_types_allowed=True,
+                extra=extra_mode,
+            )
+
+        return create_model(
+            f"{tool_name.replace('-', '_')}_Input",
+            __base__=ToolArgModelBase,
+            **model_fields,
+        )
+
+    def _create_fastmcp_tool(self, tool_definition: Dict[str, Any]):
+        from mcp.server.fastmcp.tools import Tool
+        from mcp.server.fastmcp.utilities.func_metadata import FuncMetadata
+
+        input_schema = tool_definition.get("inputSchema", {"type": "object", "properties": {}})
+        input_model = self._build_input_model(
+            tool_definition["name"],
+            input_schema,
+        )
+
+        async def handler(**payload: Any) -> str:
+            result = await self.route_tool_call(tool_definition["name"], payload)
+            if isinstance(result, BaseModel):
+                data = result.model_dump(mode="json")
+            elif hasattr(result, "model_dump"):
+                data = result.model_dump()
+            else:
+                data = result
+            return json.dumps(data, default=str)
+
+        return Tool(
+            fn=handler,
+            name=tool_definition["name"],
+            description=tool_definition.get("description", ""),
+            parameters=input_schema,
+            fn_metadata=FuncMetadata(arg_model=input_model),
+            is_async=True,
+            context_kwarg=None,
+            meta=tool_definition.get("_meta"),
+        )
+
+    def _create_mcp_server(self):
+        """Create the underlying FastMCP server."""
+
+        try:
+            from mcp.server.fastmcp import FastMCP
+        except ImportError as exc:  # pragma: no cover - optional dependency
+            raise ImportError("FastMCP not installed. Install with: pip install afd[server]") from exc
+
+        self._mcp_server = FastMCP(self.config.name)
+        self._sync_mcp_tool_definitions()
+        self._install_fastmcp_context_error_translation()
+        return self._mcp_server
 
     def run(self, transport: str = "stdio") -> None:
-        """Run the server with the specified transport.
-        
-        Args:
-            transport: Transport type ("stdio" or "sse").
-        
-        Example:
-            >>> server.run()  # Runs with stdio (default)
-            >>> server.run(transport="sse")  # Runs with SSE
-        """
         mcp = self._create_mcp_server()
-        
+        if transport not in {"stdio", "sse"}:
+            raise ValueError(f"Unknown transport: {transport}")
+        mcp.run(transport=transport)
+
+    async def run_async(self, transport: str = "stdio") -> None:
+        mcp = self._create_mcp_server()
         if transport == "stdio":
-            mcp.run(transport="stdio")
+            await mcp.run_stdio_async()
         elif transport == "sse":
-            mcp.run(transport="sse")
+            await mcp.run_sse_async()
+        elif transport == "streamable-http":
+            await mcp.run_streamable_http_async()
         else:
             raise ValueError(f"Unknown transport: {transport}")
-    
-    async def run_async(self, transport: str = "stdio") -> None:
-        """Run the server asynchronously.
-        
-        Args:
-            transport: Transport type.
-        """
-        mcp = self._create_mcp_server()
-        await mcp.run_async(transport=transport)
 
 
 def create_server(
@@ -432,45 +621,34 @@ def create_server(
     version: str = "1.0.0",
     description: Optional[str] = None,
     middleware: Optional[List[CommandMiddleware]] = None,
+    *,
+    tool_strategy: ToolStrategy = "individual",
+    contexts: Optional[List[ContextConfig]] = None,
+    group_by: Optional[GroupByFn] = None,
 ) -> MCPServer:
-    """Create a new AFD MCP server.
+    """Create a new AFD MCP server."""
 
-    This is the main entry point for building AFD applications.
+    normalized_contexts = [
+        item
+        if isinstance(item, ContextConfig)
+        else ContextConfig(**item)
+        if isinstance(item, dict)
+        else ContextConfig(
+            name=getattr(item, "name"),
+            description=getattr(item, "description", None),
+            triggers=list(getattr(item, "triggers", []) or []),
+            priority=getattr(item, "priority", None),
+        )
+        for item in (contexts or [])
+    ]
 
-    Args:
-        name: Server name (shown to MCP clients).
-        version: Server version string.
-        description: Optional description.
-        middleware: List of middleware functions to wrap command execution.
-
-    Returns:
-        Configured MCPServer instance.
-
-    Example:
-        >>> from afd.server import create_server, default_middleware
-        >>> from afd import success
-        >>> from pydantic import BaseModel
-        >>>
-        >>> server = create_server("my-app", version="1.0.0", middleware=default_middleware())
-        >>>
-        >>> class EchoInput(BaseModel):
-        ...     message: str
-        >>>
-        >>> @server.command(
-        ...     name="echo",
-        ...     description="Echo a message",
-        ...     input_schema=EchoInput,
-        ... )
-        ... async def echo(input: EchoInput):
-        ...     return success({"echo": input.message})
-        >>>
-        >>> # In production:
-        >>> # server.run()
-    """
     config = ServerConfig(
         name=name,
         version=version,
         description=description,
         middleware=middleware or [],
+        tool_strategy=tool_strategy,
+        contexts=normalized_contexts,
+        group_by=group_by,
     )
     return MCPServer(config)

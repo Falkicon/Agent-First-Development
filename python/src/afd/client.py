@@ -297,7 +297,7 @@ class McpClient:
         commands: Sequence[Dict[str, Any]],
         options: Optional[Dict[str, Any]] = None,
     ) -> Any:
-        """Execute a batch of commands via the ``afd.batch`` tool.
+        """Execute a batch of commands via the ``afd-batch`` tool.
 
         Args:
             commands: List of ``{"name": ..., "input": ...}`` dicts.
@@ -307,8 +307,14 @@ class McpClient:
             Batch result from the server.
         """
         self._require_connected()
-        return await self._transport.call_tool("afd.batch", {
-            "commands": list(commands),
+        normalized_commands: list[Dict[str, Any]] = []
+        for command in commands:
+            payload = dict(command)
+            if "command" not in payload and "name" in payload:
+                payload["command"] = payload.pop("name")
+            normalized_commands.append(payload)
+        return await self._transport.call_tool("afd-batch", {
+            "commands": normalized_commands,
             "options": options or {},
         })
 
