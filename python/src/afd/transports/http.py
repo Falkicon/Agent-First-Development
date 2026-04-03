@@ -6,7 +6,7 @@ No streaming or server-push — suitable for stateless interactions.
 Example:
     >>> from afd.transports import HttpTransport
     >>>
-    >>> transport = HttpTransport("http://localhost:3100/message")
+    >>> transport = HttpTransport("http://localhost:3100/messages/")
     >>> await transport.connect()
     >>> result = await transport.call_tool("ping", {})
     >>> await transport.disconnect()
@@ -54,7 +54,7 @@ class HttpTransport(_HttpBasedTransport):
             self._client = httpx.AsyncClient()
 
             # Health check (best-effort)
-            health_url = self._message_url.replace("/message", "/health")
+            health_url = self._derive_health_url(self._message_url)
             try:
                 resp = await self._client.get(
                     health_url,

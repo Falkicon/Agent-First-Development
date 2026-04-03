@@ -44,9 +44,15 @@ from afd.server.decorators import define_command
 from afd.server.factory import create_server, MCPServer
 from afd.server.bootstrap import (
     get_bootstrap_commands,
+    ContextConfig,
+    ContextState,
+    create_context_state,
     create_afd_help_command,
     create_afd_docs_command,
     create_afd_schema_command,
+    create_afd_context_list_command,
+    create_afd_context_enter_command,
+    create_afd_context_exit_command,
 )
 from afd.server.middleware import (
     CommandMiddleware,
@@ -96,9 +102,15 @@ __all__ = [
     "MCPServer",
     # Bootstrap commands
     "get_bootstrap_commands",
+    "ContextConfig",
+    "ContextState",
+    "create_context_state",
     "create_afd_help_command",
     "create_afd_docs_command",
     "create_afd_schema_command",
+    "create_afd_context_list_command",
+    "create_afd_context_enter_command",
+    "create_afd_context_exit_command",
     # Middleware
     "CommandMiddleware",
     "NextFn",

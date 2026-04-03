@@ -1,34 +1,32 @@
-"""afd-docs bootstrap command.
+"""``afd-docs`` bootstrap command."""
 
-Generate markdown documentation for commands.
-"""
+from __future__ import annotations
 
+import json
 from typing import Any, Callable, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from afd.core.commands import (
-    CommandContext,
-    CommandDefinition,
-    CommandParameter,
-)
+from afd.core.commands import CommandContext, CommandDefinition, CommandParameter
 from afd.core.result import CommandResult, success
+from afd.server.bootstrap.afd_context import BOOTSTRAP_EXPOSE
 
 
 class AfdDocsInput(BaseModel):
-    """Input for afd-docs command."""
+    """Input for ``afd-docs``."""
 
-    command: Optional[str] = Field(
-        default=None,
-        description="Specific command name, or omit for all",
-    )
+    command: Optional[str] = Field(default=None, description="Specific command name, or omit for all")
 
 
 class AfdDocsOutput(BaseModel):
-    """Output for afd-docs command."""
+    """Output for ``afd-docs``."""
 
     markdown: str
     command_count: int
+
+
+def _json_block(value: dict[str, Any]) -> str:
+    return f"```json\n{json.dumps(value, indent=2)}\n```"
 
 
 async def _afd_docs_handler(
@@ -36,81 +34,88 @@ async def _afd_docs_handler(
     context: Optional[CommandContext],
     get_commands: Callable[[], List[CommandDefinition]],
 ) -> CommandResult[AfdDocsOutput]:
-    """Handler for afd-docs command."""
-    all_commands = get_commands()
-
-    # Filter to specific command if provided
+    commands = get_commands()
     if input.command:
-        commands = [cmd for cmd in all_commands if cmd.name == input.command]
-    else:
-        commands = all_commands
+        commands = [command for command in commands if command.name == input.command]
 
-    if input.command and len(commands) == 0:
+    if input.command and not commands:
         return success(
             AfdDocsOutput(markdown="", command_count=0),
             reasoning=f'Command "{input.command}" not found',
             confidence=1.0,
         )
 
-    # Generate markdown
-    lines: List[str] = []
-    lines.append("# Command Documentation")
-    lines.append("")
+    lines: list[str] = ["# Command Documentation", ""]
+    grouped: Dict[str, List[CommandDefinition]] = {}
+    for command in commands:
+        grouped.setdefault(command.category or "General", []).append(command)
 
-    # Group by category
-    by_category: Dict[str, List[CommandDefinition]] = {}
-    for cmd in commands:
-        category = cmd.category or "General"
-        if category not in by_category:
-            by_category[category] = []
-        by_category[category].append(cmd)
-
-    for category in sorted(by_category.keys()):
-        cmds = by_category[category]
+    for category in sorted(grouped):
         lines.append(f"## {category}")
         lines.append("")
-
-        for cmd in sorted(cmds, key=lambda c: c.name):
-            lines.append(f"### `{cmd.name}`")
+        for command in sorted(grouped[category], key=lambda item: item.name):
+            lines.append(f"### `{command.name}`")
             lines.append("")
-            lines.append(cmd.description)
+            lines.append(command.description)
             lines.append("")
 
-            # Tags
-            if cmd.tags:
-                tags_str = ", ".join(f"`{t}`" for t in cmd.tags)
-                lines.append(f"**Tags:** {tags_str}")
+            if command.tags:
+                lines.append(f"**Tags:** {', '.join(f'`{tag}`' for tag in command.tags)}")
                 lines.append("")
 
-            # Mutation info
-            if cmd.mutation is not None:
-                mutation_str = "Yes" if cmd.mutation else "No (read-only)"
-                lines.append(f"**Mutation:** {mutation_str}")
+            lines.append(f"**Mutation:** {'Yes' if command.mutation else 'No (read-only)'}")
+            lines.append("")
+
+            if command.requires:
+                lines.append(f"**Requires:** {', '.join(f'`{name}`' for name in command.requires)}")
                 lines.append("")
 
-            # Parameters
-            if cmd.parameters:
+            if command.contexts:
+                lines.append(f"**Contexts:** {', '.join(f'`{name}`' for name in command.contexts)}")
+                lines.append("")
+
+            if command.parameters:
                 lines.append("**Parameters:**")
                 lines.append("")
                 lines.append("| Name | Type | Required | Description |")
                 lines.append("|------|------|----------|-------------|")
-                for param in cmd.parameters:
-                    required = "Yes" if param.required else "No"
-                    desc = param.description or ""
-                    lines.append(f"| {param.name} | {param.type} | {required} | {desc} |")
+                for parameter in command.parameters:
+                    lines.append(
+                        f"| {parameter.name} | {parameter.type} | "
+                        f"{'Yes' if parameter.required else 'No'} | {parameter.description} |"
+                    )
+                lines.append("")
+
+            if command.examples:
+                lines.append("**Examples:**")
+                lines.append("")
+                for example in command.examples:
+                    lines.append(f"- `{example.title}`")
+                    lines.append("")
+                    lines.append(_json_block(example.input if isinstance(example.input, dict) else {"value": example.input}))
+                    lines.append("")
+
+            if command.input_schema:
+                lines.append("**Input Schema:**")
+                lines.append("")
+                lines.append(_json_block(command.input_schema))
+                lines.append("")
+
+            if command.returns:
+                lines.append("**Output Schema:**")
+                lines.append("")
+                lines.append(_json_block(command.returns))
                 lines.append("")
 
             lines.append("---")
             lines.append("")
 
     markdown = "\n".join(lines)
-
     reasoning = (
         f'Generated documentation for "{input.command}"'
         if input.command
         else f"Generated documentation for {len(commands)} commands"
     )
-
     return success(
         AfdDocsOutput(markdown=markdown, command_count=len(commands)),
         reasoning=reasoning,
@@ -121,37 +126,18 @@ async def _afd_docs_handler(
 def create_afd_docs_command(
     get_commands: Callable[[], List[CommandDefinition]],
 ) -> CommandDefinition:
-    """Create the afd-docs bootstrap command.
-
-    Args:
-        get_commands: Function to get all registered commands.
-
-    Returns:
-        CommandDefinition for afd-docs.
-
-    Example:
-        >>> def get_cmds():
-        ...     return [my_command_1, my_command_2]
-        >>> docs_cmd = create_afd_docs_command(get_cmds)
-    """
+    """Create the ``afd-docs`` bootstrap command."""
 
     async def handler(
         input: Any,
         context: Optional[CommandContext] = None,
     ) -> CommandResult[AfdDocsOutput]:
-        # Convert dict input to pydantic model if needed
-        if isinstance(input, dict):
-            parsed_input = AfdDocsInput(**input)
-        elif isinstance(input, AfdDocsInput):
-            parsed_input = input
-        else:
-            parsed_input = AfdDocsInput()
-
+        parsed_input = input if isinstance(input, AfdDocsInput) else AfdDocsInput(**(input or {}))
         return await _afd_docs_handler(parsed_input, context, get_commands)
 
     return CommandDefinition(
         name="afd-docs",
-        description="Get detailed documentation for commands",
+        description="Generate markdown documentation for available commands",
         handler=handler,
         category="bootstrap",
         tags=["bootstrap", "read", "safe"],
@@ -163,6 +149,9 @@ def create_afd_docs_command(
                 type="string",
                 description="Specific command name, or omit for all",
                 required=False,
-            ),
+            )
         ],
+        input_schema=AfdDocsInput.model_json_schema(),
+        returns=AfdDocsOutput.model_json_schema(),
+        expose=BOOTSTRAP_EXPOSE,
     )

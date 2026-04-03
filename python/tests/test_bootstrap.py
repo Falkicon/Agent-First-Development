@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from afd import success
 from afd.core.commands import (
+    CommandExample,
     CommandDefinition,
     CommandParameter,
     create_command_registry,
@@ -36,6 +37,10 @@ def create_sample_commands():
             tags=["todo", "mutation", "write"],
             mutation=True,
             version="1.0.0",
+            returns={"type": "object", "properties": {"id": {"type": "string"}}},
+            examples=[CommandExample(input={"title": "Buy milk"}, title="Basic")],
+            requires=["workspace-open"],
+            contexts=["editing"],
             parameters=[
                 CommandParameter(
                     name="title",
@@ -178,6 +183,9 @@ class TestAfdHelp:
         assert todo_create.category == "todo"
         assert "mutation" in todo_create.tags
         assert todo_create.mutation is True
+        assert todo_create.requires == ["workspace-open"]
+        assert todo_create.contexts == ["editing"]
+        assert todo_create.output_schema["properties"]["id"]["type"] == "string"
 
     @pytest.mark.asyncio
     async def test_grouped_by_category(self):
@@ -299,6 +307,19 @@ class TestAfdDocs:
         assert "**Mutation:** Yes" in result.data.markdown
 
     @pytest.mark.asyncio
+    async def test_docs_include_requires_contexts_examples_and_output_schema(self):
+        commands = create_sample_commands()
+        cmd = create_afd_docs_command(lambda: commands)
+
+        result = await cmd.handler({"command": "todo-create"}, None)
+
+        assert result.success is True
+        assert "**Requires:** `workspace-open`" in result.data.markdown
+        assert "**Contexts:** `editing`" in result.data.markdown
+        assert "**Examples:**" in result.data.markdown
+        assert "**Output Schema:**" in result.data.markdown
+
+    @pytest.mark.asyncio
     async def test_pydantic_input(self):
         """Test with Pydantic model input."""
         commands = create_sample_commands()
@@ -381,8 +402,21 @@ class TestAfdSchema:
 
         assert result.success is True
         assert result.data.format == "typescript"
-        # TypeScript format is placeholder, still returns schemas
         assert result.data.count == 3
+        todo_create = next(s for s in result.data.schemas if s.name == "todo-create")
+        assert "export interface TodoCreateInput" in todo_create.typescript
+        assert "export interface TodoCreateOutput" in todo_create.typescript
+
+    @pytest.mark.asyncio
+    async def test_schema_includes_output_schema(self):
+        commands = create_sample_commands()
+        cmd = create_afd_schema_command(lambda: commands)
+
+        result = await cmd.handler({}, None)
+
+        assert result.success is True
+        todo_create = next(s for s in result.data.schemas if s.name == "todo-create")
+        assert todo_create.output_schema["properties"]["id"]["type"] == "string"
 
     @pytest.mark.asyncio
     async def test_custom_json_schema_function(self):

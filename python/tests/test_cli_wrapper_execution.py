@@ -18,6 +18,14 @@ from afd.testing.cli_wrapper import (
 )
 
 
+async def _timeout_wait_for(awaitable, timeout):
+	"""Close mocked awaitables before timing out to avoid unawaited-coroutine warnings."""
+	close = getattr(awaitable, "close", None)
+	if callable(close):
+		close()
+	raise asyncio.TimeoutError()
+
+
 # ==============================================================================
 # CliWrapper.execute — mock subprocess
 # ==============================================================================
@@ -34,7 +42,7 @@ class TestExecute:
 	async def test_successful_json_response(self, wrapper):
 		"""Should return ExecuteSuccess for valid JSON CommandResult."""
 		json_output = json.dumps({"success": True, "data": {"id": 1, "title": "Test"}})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"")
 		)
@@ -55,7 +63,7 @@ class TestExecute:
 	@pytest.mark.asyncio
 	async def test_non_json_response_exit_zero(self, wrapper):
 		"""Should return ExecuteSuccess for non-JSON stdout with exit 0."""
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(b"Plain text output", b"")
 		)
@@ -73,7 +81,7 @@ class TestExecute:
 	@pytest.mark.asyncio
 	async def test_subprocess_nonzero_exit(self, wrapper):
 		"""Should return ExecuteError when subprocess exits with nonzero code."""
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(b"", b"Error: command not found")
 		)
@@ -92,14 +100,14 @@ class TestExecute:
 	@pytest.mark.asyncio
 	async def test_timeout_handling(self, wrapper):
 		"""Should return ExecuteError when command times out."""
-		mock_proc = AsyncMock()
-		mock_proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError())
+		mock_proc = MagicMock()
+		mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
 		mock_proc.returncode = None
 
 		with patch("afd.testing.cli_wrapper.asyncio.create_subprocess_exec", return_value=mock_proc):
-			with patch("afd.testing.cli_wrapper.asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+			with patch("afd.testing.cli_wrapper.asyncio.wait_for", new=_timeout_wait_for):
 				result = await wrapper.execute("slow-command")
 
 		assert isinstance(result, ExecuteError)
@@ -110,30 +118,33 @@ class TestExecute:
 	async def test_execute_options_timeout_override(self, wrapper):
 		"""Should use ExecuteOptions timeout instead of config timeout."""
 		json_output = json.dumps({"success": True, "data": "ok"})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"")
 		)
 		mock_proc.returncode = 0
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
+		captured_timeout = None
 
-		with patch("afd.testing.cli_wrapper.asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
-			with patch("afd.testing.cli_wrapper.asyncio.wait_for", return_value=(json_output.encode(), b"")) as mock_wait:
-				result = await wrapper.execute(
+		async def capture_wait_for(awaitable, timeout):
+			nonlocal captured_timeout
+			captured_timeout = timeout
+			return await awaitable
+
+		with patch("afd.testing.cli_wrapper.asyncio.create_subprocess_exec", return_value=mock_proc):
+			with patch("afd.testing.cli_wrapper.asyncio.wait_for", new=capture_wait_for):
+				await wrapper.execute(
 					"todo-list",
 					options=ExecuteOptions(timeout=5000),
 				)
-				# Verify wait_for was called with timeout=5.0 (5000ms / 1000)
-				if mock_wait.called:
-					call_kwargs = mock_wait.call_args
-					assert call_kwargs[1].get("timeout", call_kwargs[0][1] if len(call_kwargs[0]) > 1 else None) == 5.0
+				assert captured_timeout == 5.0
 
 	@pytest.mark.asyncio
 	async def test_execute_options_env_override(self, wrapper):
 		"""Should merge ExecuteOptions.env into subprocess environment."""
 		json_output = json.dumps({"success": True, "data": "ok"})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"")
 		)
@@ -171,7 +182,7 @@ class TestExecute:
 		wrapper = CliWrapper(config)
 
 		json_output = json.dumps({"success": True, "data": "hi"})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"some warning")
 		)
@@ -189,7 +200,7 @@ class TestExecute:
 	async def test_execute_passes_correct_args_to_subprocess(self, wrapper):
 		"""Should invoke create_subprocess_exec with correct cli_path and args."""
 		json_output = json.dumps({"success": True, "data": None})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"")
 		)
@@ -219,7 +230,7 @@ class TestExecute:
 			"success": False,
 			"error": {"code": "NOT_FOUND", "message": "Not found"},
 		})
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(json_output.encode(), b"")
 		)
@@ -352,7 +363,7 @@ class TestSpawn:
 	async def test_spawn_returns_stdout_stderr_exit_code(self):
 		"""Should return (stdout, stderr, exit_code) tuple."""
 		wrapper = CliWrapper()
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(
 			return_value=(b"output data", b"warning")
 		)
@@ -371,7 +382,7 @@ class TestSpawn:
 	async def test_spawn_timeout_kills_process(self):
 		"""Should kill the process and raise TimeoutError on timeout."""
 		wrapper = CliWrapper()
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(return_value=(b"", b""))
 		mock_proc.kill = MagicMock()
 		mock_proc.wait = AsyncMock()
@@ -379,7 +390,7 @@ class TestSpawn:
 		with patch("afd.testing.cli_wrapper.asyncio.create_subprocess_exec", return_value=mock_proc):
 			with patch(
 				"afd.testing.cli_wrapper.asyncio.wait_for",
-				side_effect=asyncio.TimeoutError(),
+				new=_timeout_wait_for,
 			):
 				with pytest.raises(TimeoutError, match="timed out"):
 					await wrapper._spawn(["call", "slow"], 100)
@@ -391,7 +402,7 @@ class TestSpawn:
 		"""Should merge config env and extra_env into subprocess env."""
 		config = CliConfig(env={"CONFIG_KEY": "config_val"})
 		wrapper = CliWrapper(config)
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(return_value=(b"ok", b""))
 		mock_proc.returncode = 0
 		mock_proc.kill = MagicMock()
@@ -408,7 +419,7 @@ class TestSpawn:
 	async def test_spawn_handles_none_returncode(self):
 		"""Should default to exit_code 0 when returncode is None."""
 		wrapper = CliWrapper()
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		mock_proc.communicate = AsyncMock(return_value=(b"data", b""))
 		mock_proc.returncode = None
 		mock_proc.kill = MagicMock()
@@ -423,7 +434,7 @@ class TestSpawn:
 	async def test_spawn_decodes_utf8(self):
 		"""Should decode bytes as UTF-8."""
 		wrapper = CliWrapper()
-		mock_proc = AsyncMock()
+		mock_proc = MagicMock()
 		# UTF-8 encoded string with non-ASCII characters
 		mock_proc.communicate = AsyncMock(
 			return_value=("Helloo woorld".encode("utf-8"), b"")

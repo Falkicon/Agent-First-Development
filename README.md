@@ -174,7 +174,7 @@ By designing for agents first, your software automatically becomes API-first (ag
 
 ## What's in the Toolkit
 
-AFD ships as packages across **TypeScript, Python, and Rust**, all sharing the same `CommandResult` contract:
+AFD ships as packages across **TypeScript, Python, and Rust**, all sharing the same AFD capability set and agent-visible contract, even when the language-specific APIs differ:
 
 | Package | What it does |
 |---------|-------------|
@@ -185,8 +185,10 @@ AFD ships as packages across **TypeScript, Python, and Rust**, all sharing the s
 | **@afd/cli** | CLI for connecting, calling, validating, and exploring commands |
 | **@afd/auth** | Provider-agnostic auth adapter — middleware, commands, session sync, React hooks, adapters for Mock/Convex/BetterAuth |
 | **@afd/adapters** | Frontend adapters for rendering `CommandResult` → styled HTML with CSS variable theming |
-| **afd** *(Python)* | Full TS parity — `CommandResult`, MCP server/client, middleware, validation, telemetry, batch/streaming, testing, handoff |
+| **afd** *(Python)* | Functional AFD parity in idiomatic Python — `CommandResult`, MCP server/client, middleware, validation, telemetry, batch/streaming, testing, handoff |
 | **afd** *(Rust)* | `CommandResult` types, `CommandRegistry`, batch/stream support, WASM-compatible |
+
+AFD stays framework-agnostic at the command layer. React or browser integrations belong in examples and ecosystem layers, not in the core parity target.
 
 Features like [command trust config](./docs/features/complete/command-trust-config/), [exposure & undo](./docs/features/complete/command-exposure-undo/), [command pipelines](./docs/features/complete/command-pipeline/), [real-time handoff](./docs/features/complete/handoff-pattern/), and [middleware defaults](./docs/features/complete/middleware-defaults/) (zero-config observability) are already shipped. TypeSpec-based [cross-layer contract sync](./.claude/skills/afd-contracts/SKILL.md) prevents schema drift between codebases.
 

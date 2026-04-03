@@ -16,12 +16,14 @@ SurfaceRule = Literal[
 	"naming-convention",
 	"naming-collision",
 	"missing-category",
+	"missing-context",
 	"description-injection",
 	"description-quality",
 	"orphaned-category",
 	"schema-complexity",
 	"unresolved-prerequisite",
 	"circular-prerequisite",
+	"missing-output-schema",
 ]
 
 
@@ -42,6 +44,7 @@ class SurfaceValidationOptions:
 	additional_injection_patterns: list[InjectionPattern] | None = None
 	check_schema_complexity: bool = True
 	schema_complexity_threshold: int = 13
+	configured_contexts: list[str] | None = None
 
 
 @dataclass
@@ -106,7 +109,9 @@ class SurfaceCommand:
 	description: str
 	category: str | None = None
 	json_schema: dict[str, Any] | None = None
+	output_json_schema: dict[str, Any] | None = None
 	requires: list[str] | None = None
+	contexts: list[str] | None = None
 
 
 @dataclass

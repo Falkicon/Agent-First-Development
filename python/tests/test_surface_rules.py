@@ -6,6 +6,8 @@ from afd.testing.surface.rules import (
 	check_description_injection,
 	check_description_quality,
 	check_missing_category,
+	check_missing_context,
+	check_missing_output_schema,
 	check_naming_collision,
 	check_naming_convention,
 	check_orphaned_category,
@@ -23,7 +25,9 @@ def _cmd(
 	*,
 	category: str | None = None,
 	json_schema: dict | None = None,
+	output_json_schema: dict | None = None,
 	requires: list[str] | None = None,
+	contexts: list[str] | None = None,
 ) -> SurfaceCommand:
 	"""Shorthand for creating a SurfaceCommand."""
 	return SurfaceCommand(
@@ -31,7 +35,9 @@ def _cmd(
 		description=description,
 		category=category,
 		json_schema=json_schema,
+		output_json_schema=output_json_schema,
 		requires=requires,
+		contexts=contexts,
 	)
 
 
@@ -230,6 +236,43 @@ class TestCheckMissingCategory:
 		findings = check_missing_category(commands)
 		assert len(findings) == 1
 		assert findings[0].commands == ["order-list"]
+
+
+class TestCheckMissingContext:
+	"""Tests for check_missing_context rule."""
+
+	def test_detects_missing_context_when_configured(self):
+		commands = [_cmd("user-create")]
+		findings = check_missing_context(commands, ["editing"])
+		assert len(findings) == 1
+		assert findings[0].rule == "missing-context"
+		assert findings[0].severity == "info"
+
+	def test_skips_commands_with_contexts(self):
+		commands = [_cmd("user-create", contexts=["editing"])]
+		findings = check_missing_context(commands, ["editing"])
+		assert len(findings) == 0
+
+	def test_no_findings_when_no_configured_contexts(self):
+		commands = [_cmd("user-create")]
+		findings = check_missing_context(commands, [])
+		assert len(findings) == 0
+
+
+class TestCheckMissingOutputSchema:
+	"""Tests for check_missing_output_schema rule."""
+
+	def test_detects_missing_output_schema(self):
+		findings = check_missing_output_schema([_cmd("todo-list")])
+		assert len(findings) == 1
+		assert findings[0].rule == "missing-output-schema"
+		assert findings[0].severity == "info"
+
+	def test_skips_commands_with_output_schema(self):
+		findings = check_missing_output_schema([
+			_cmd("todo-list", output_json_schema={"type": "array"})
+		])
+		assert len(findings) == 0
 
 
 class TestCheckDescriptionInjection:

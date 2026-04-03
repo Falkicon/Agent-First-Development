@@ -44,12 +44,17 @@ from afd.core.metadata import (
 from afd.core.commands import (
     CommandParameter,
     CommandDefinition,
+    CommandExample,
     CommandHandler,
     CommandContext,
     CommandRegistry,
     ExposeOptions,
     DEFAULT_EXPOSE,
+    JsonSchema,
+    command_to_mcp_tool,
+    serialize_command_examples,
     create_command_registry,
+    validate_command_name,
 )
 from afd.core.mcp_types import (
     MCP_PROTOCOL_VERSION,
@@ -175,12 +180,17 @@ __all__ = [
     # Command types
     "CommandParameter",
     "CommandDefinition",
+    "CommandExample",
     "CommandHandler",
     "CommandContext",
     "CommandRegistry",
     "ExposeOptions",
     "DEFAULT_EXPOSE",
+    "JsonSchema",
+    "command_to_mcp_tool",
+    "serialize_command_examples",
     "create_command_registry",
+    "validate_command_name",
     # MCP protocol types
     "MCP_PROTOCOL_VERSION",
     "JSONRPC_VERSION",

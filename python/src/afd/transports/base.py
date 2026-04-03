@@ -54,6 +54,7 @@ class ToolInfo:
     name: str
     description: str
     input_schema: Optional[Dict[str, Any]] = None
+    meta: Optional[Dict[str, Any]] = None
 
 
 @runtime_checkable

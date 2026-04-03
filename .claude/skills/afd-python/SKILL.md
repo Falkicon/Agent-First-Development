@@ -14,6 +14,56 @@ description: >
 
 Patterns for implementing AFD commands in Python.
 
+## Parity Rule
+
+Python implementations SHOULD match the shared AFD capability set and agent-visible behavior, while keeping Pythonic APIs and Pydantic-friendly data models where that better fits the language.
+
+- Core command surfaces MUST stay framework-agnostic.
+- React or browser integrations SHOULD stay in examples or separate ecosystem layers.
+- Cross-language parity does NOT require a 1:1 port of TypeScript helper names or module boundaries.
+
+## Command Metadata Parity
+
+Python command definitions now carry the same planning and discovery metadata that agents see in the TypeScript surface.
+
+- Use `output_schema=` to declare the response shape. It is exported as `returns` and surfaced through MCP `_meta.outputSchema`.
+- Use `requires=` for planning-order dependencies. This is metadata only and is not enforced at runtime.
+- Use `contexts=` to scope commands to named contexts.
+- Use `examples=` with concrete payloads. Examples are validated against the input model at decoration time.
+- Use `category=` when grouped tools should use a stable explicit group name instead of the first kebab-case segment.
+
+```python
+from pydantic import BaseModel, Field
+from afd import CommandResult, success
+from afd.server import create_server
+
+
+class DraftInput(BaseModel):
+    title: str = Field(..., min_length=1)
+
+
+class DraftOutput(BaseModel):
+    id: str
+
+
+server = create_server("docs", tool_strategy="lazy")
+
+
+@server.command(
+    name="doc-create",
+    description="Create a draft document",
+    category="docs",
+    input_schema=DraftInput,
+    output_schema=DraftOutput,
+    mutation=True,
+    requires=["workspace-open"],
+    contexts=["editing"],
+    examples=[{"title": "Basic draft", "input": {"title": "Q2 plan"}}],
+)
+async def create_doc(input: DraftInput) -> CommandResult[DraftOutput]:
+    return success(DraftOutput(id="doc-1"), reasoning="Created draft document")
+```
+
 ## Package Imports
 
 ```python
@@ -49,14 +99,25 @@ class CreateTodoInput(BaseModel):
     description: Optional[str] = Field(None, description="Optional description")
     priority: str = Field("medium", description="Priority: low, medium, high")
 
+
+class CreateTodoOutput(BaseModel):
+    id: str
+    title: str
+    priority: str
+
 # Define command
 @server.command(
     name="todo-create",
     description="Create a new todo item",
+    category="todo",
     input_schema=CreateTodoInput,
+    output_schema=CreateTodoOutput,
+    requires=["workspace-open"],
+    contexts=["editing"],
+    examples=[{"title": "Basic todo", "input": {"title": "Buy milk"}}],
     mutation=True
 )
-async def create_todo(input: CreateTodoInput) -> CommandResult[Todo]:
+async def create_todo(input: CreateTodoInput) -> CommandResult[CreateTodoOutput]:
     if input.priority not in ["low", "medium", "high"]:
         return error(
             code="INVALID_PRIORITY",
@@ -64,10 +125,9 @@ async def create_todo(input: CreateTodoInput) -> CommandResult[Todo]:
             suggestion="Use 'low', 'medium', or 'high'"
         )
 
-    todo = Todo(
+    todo = CreateTodoOutput(
         id=str(uuid.uuid4())[:8],
         title=input.title,
-        description=input.description,
         priority=input.priority,
     )
     todos[todo.id] = todo
@@ -89,12 +149,27 @@ class ListTodosInput(BaseModel):
     limit: int = Field(20, ge=1, le=100)
     offset: int = Field(0, ge=0)
 
+
+class TodoSummary(BaseModel):
+    id: str
+    title: str
+    priority: str
+
+
+class ListTodosOutput(BaseModel):
+    todos: List[TodoSummary]
+    total: int
+    has_more: bool
+
 @server.command(
     name="todo-list",
     description="List all todo items with optional filtering",
-    input_schema=ListTodosInput
+    category="todo",
+    input_schema=ListTodosInput,
+    output_schema=ListTodosOutput,
+    examples=[{"title": "High priority", "input": {"priority": "high", "limit": 10}}],
 )
-async def list_todos(input: ListTodosInput) -> CommandResult[Dict[str, Any]]:
+async def list_todos(input: ListTodosInput) -> CommandResult[ListTodosOutput]:
     items = list(todos.values())
 
     # Apply filters
@@ -110,11 +185,11 @@ async def list_todos(input: ListTodosInput) -> CommandResult[Dict[str, Any]]:
     items = items[input.offset : input.offset + input.limit]
 
     return success(
-        data={
-            "todos": [t.model_dump() for t in items],
-            "total": total,
-            "hasMore": total > input.offset + input.limit
-        },
+        data=ListTodosOutput(
+            todos=[TodoSummary(id=t.id, title=t.title, priority=t.priority) for t in items],
+            total=total,
+            has_more=total > input.offset + input.limit,
+        ),
         reasoning=f"Found {total} todo(s)"
     )
 ```
@@ -300,13 +375,18 @@ server = create_server(
     name="todo-app",
     version="1.0.0",
     description="A todo list manager using AFD patterns",
+    tool_strategy="lazy",
+    contexts=[
+        ContextConfig(name="editing", description="Commands that create or edit todos"),
+        ContextConfig(name="reviewing", description="Commands that review or summarize todos"),
+    ],
 )
 
 # Register commands using decorators
-@server.command(name="todo-create", ...)
+@server.command(name="todo-create", output_schema=CreateTodoOutput, contexts=["editing"], ...)
 async def create_todo(input): ...
 
-@server.command(name="todo-list", ...)
+@server.command(name="todo-list", output_schema=ListTodosOutput, contexts=["reviewing"], ...)
 async def list_todos(input): ...
 
 # Run server
@@ -316,6 +396,89 @@ if __name__ == "__main__":
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     server.run()
 ```
+
+### Tool Strategies and Bootstrap Tools
+
+Python servers support the same three discovery modes as the shared AFD surface:
+
+- `tool_strategy="individual"` — one MCP tool per command
+- `tool_strategy="grouped"` — one MCP tool per category/group with `action`
+- `tool_strategy="lazy"` — stable meta-tools for large command sets
+
+```python
+from afd.server import ContextConfig, create_server
+
+server = create_server(
+    name="todo-app",
+    version="1.0.0",
+    tool_strategy="lazy",
+    contexts=[
+        ContextConfig(name="editing", description="Write and edit documents"),
+        ContextConfig(name="reviewing", description="Review and approve documents"),
+    ],
+)
+```
+
+Built-in tools exposed by strategy:
+
+- All strategies: `afd-call`, `afd-batch`, `afd-pipe`, `afd-help`, `afd-docs`, `afd-schema`
+- Lazy only: `afd-discover`, `afd-detail`
+- When contexts are configured: `afd-context-list`, `afd-context-enter`, `afd-context-exit`
+
+Context-scoped commands stay hidden from discovery outside the active context and return actionable `COMMAND_NOT_IN_CONTEXT` errors when called directly.
+
+### Surface Validation
+
+Use the Python CLI to validate the agent-facing command surface, not just handler behavior.
+
+```bash
+afd validate --surface
+afd validate --surface --strict --verbose
+```
+
+The parity work adds validation for:
+
+- missing output schemas
+- missing configured contexts
+- unresolved or circular prerequisites
+- category, description, and schema quality issues
+
+### Client and CLI Discovery Workflows
+
+The shared lazy-tool workflow is:
+
+1. `afd-discover` to find candidate commands
+2. `afd-detail` to inspect input/output schemas, examples, `requires`, and `contexts`
+3. `afd-call` to execute the selected command
+
+`afd-call`, `afd-batch`, and `afd-pipe` are available in every tool strategy, not just lazy mode.
+
+```python
+from afd import McpClient, McpClientConfig
+
+client = McpClient(McpClientConfig(endpoint="http://127.0.0.1:3100/sse"))
+await client.connect()
+
+todo = await client.call("todo-create", {"title": "Ship parity docs"})
+batch = await client.batch([
+    {"command": "todo-create", "input": {"title": "Write tests"}},
+    {"command": "todo-create", "input": {"title": "Review docs"}},
+])
+pipeline = await client.pipe([
+    {"command": "todo-create", "input": {"title": "Follow up"}},
+    {"command": "todo-get", "input": {"id": "$step1.data.id"}},
+])
+```
+
+```bash
+# Inspect tools and their metadata
+afd tools --detail
+
+# Validate the live agent surface
+afd validate --surface --strict
+```
+
+When contexts are configured, agents can use `afd-context-list`, `afd-context-enter`, and `afd-context-exit` to switch scopes before calling context-bound commands.
 
 ### Server with Custom Port
 
@@ -360,6 +523,11 @@ server = create_server(
     name="todo-app",
     version="1.0.0",
     description="Todo list manager",
+    tool_strategy="lazy",
+    contexts=[
+        ContextConfig(name="editing", description="Create and edit todos"),
+        ContextConfig(name="reviewing", description="Read-only review commands"),
+    ],
 )
 
 # Input models
@@ -371,15 +539,33 @@ class CreateTodoInput(BaseModel):
 class IdInput(BaseModel):
     id: str
 
+
+class TodoOutput(BaseModel):
+    id: str
+    title: str
+    description: Optional[str] = None
+    completed: bool = False
+    priority: str = "medium"
+
+
+class DeleteTodoOutput(BaseModel):
+    id: str
+    deleted: bool
+
 # Commands
 @server.command(
     name="todo-create",
     description="Create a new todo item",
+    category="todo",
     input_schema=CreateTodoInput,
+    output_schema=TodoOutput,
+    requires=["workspace-open"],
+    contexts=["editing"],
+    examples=[{"title": "Basic create", "input": {"title": "Plan sprint"}}],
     mutation=True
 )
-async def create_todo(input: CreateTodoInput) -> CommandResult[Todo]:
-    todo = Todo(
+async def create_todo(input: CreateTodoInput) -> CommandResult[TodoOutput]:
+    todo = TodoOutput(
         id=str(uuid.uuid4())[:8],
         title=input.title,
         description=input.description,
@@ -391,9 +577,12 @@ async def create_todo(input: CreateTodoInput) -> CommandResult[Todo]:
 @server.command(
     name="todo-get",
     description="Get a todo by ID",
-    input_schema=IdInput
+    category="todo",
+    input_schema=IdInput,
+    output_schema=TodoOutput,
+    contexts=["editing", "reviewing"],
 )
-async def get_todo(input: IdInput) -> CommandResult[Todo]:
+async def get_todo(input: IdInput) -> CommandResult[TodoOutput]:
     if input.id not in todos:
         return error(
             code="NOT_FOUND",
@@ -405,16 +594,19 @@ async def get_todo(input: IdInput) -> CommandResult[Todo]:
 @server.command(
     name="todo-delete",
     description="Delete a todo by ID",
+    category="todo",
     input_schema=IdInput,
+    output_schema=DeleteTodoOutput,
+    contexts=["editing"],
     mutation=True
 )
-async def delete_todo(input: IdInput) -> CommandResult[Dict[str, Any]]:
+async def delete_todo(input: IdInput) -> CommandResult[DeleteTodoOutput]:
     if input.id not in todos:
         return error(code="NOT_FOUND", message=f"Todo '{input.id}' not found")
 
     deleted = todos.pop(input.id)
     return success(
-        data={"id": input.id, "deleted": True},
+        data=DeleteTodoOutput(id=input.id, deleted=True),
         reasoning=f"Deleted todo '{deleted.title}'",
         warnings=[{"code": "PERMANENT", "message": "This action cannot be undone"}]
     )

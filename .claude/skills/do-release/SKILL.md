@@ -20,15 +20,18 @@ user-invocable: true
 
 # Do Release
 
-Release a new version using Changesets — the automated versioning and changelog tool.
+Release a new version using the repo's versioning flows for npm packages and Python.
 
-## AFD-Specific: Changesets-Driven Release
+## AFD-Specific Release Tracks
 
-The AFD monorepo uses [@changesets/cli](https://github.com/changesets/changesets) for versioning and changelog management. All `@lushly-dev/*` packages share one version (fixed versioning).
+The AFD monorepo uses two release tracks:
 
-### How Changesets Works
+- **npm packages** — [@changesets/cli](https://github.com/changesets/changesets) versions and publishes the `@lushly-dev/*` packages with fixed versioning.
+- **Python package** — `python/pyproject.toml` is versioned separately and published through `publish-python.yml` on `python-v*` tags or GitHub Releases.
 
-1. **During development**: When you make a change worth releasing, create a changeset:
+### How npm Changesets Work
+
+1. **During development**: When you change a released `@lushly-dev/*` package, create a changeset:
    ```bash
    pnpm changeset
    ```
@@ -43,6 +46,15 @@ The AFD monorepo uses [@changesets/cli](https://github.com/changesets/changesets
    ```bash
    pnpm publish:npm          # build + publish to npm
    ```
+
+### Python Release Flow
+
+When the Python `afd` package changes:
+
+1. Bump `python/pyproject.toml`
+2. Update `CHANGELOG.md`
+3. Push a `python-v<version>` tag or publish a GitHub Release
+4. Let `.github/workflows/publish-python.yml` build, test, and publish to PyPI
 
 ### Automated CI Flow
 
@@ -77,8 +89,9 @@ pnpm publish:npm
 
 | Principle | Rationale |
 |-----------|-----------|
-| **Changesets owns versioning** | Changelog entries accumulate per-PR; release notes write themselves. |
+| **Changesets owns npm versioning** | Changelog entries accumulate per-PR for `@lushly-dev/*` packages. |
 | **Fixed versioning** | All `@lushly-dev/*` packages share one version via `"fixed"` config. |
+| **Python releases are separate** | Python-only work should not get a no-op changeset; it ships through the PyPI workflow. |
 | **Quality gate in CI** | Build + test run before publish in the Release workflow. |
 | **No manual tagging** | Changesets action creates tags and GitHub Releases automatically. |
 | **No npm auth locally** | Publishing happens in CI with `NPM_TOKEN` secret. |
@@ -86,18 +99,20 @@ pnpm publish:npm
 
 ### Creating a Changeset
 
-When making changes that should be released:
+When making changes to released npm packages that should be versioned:
 
 ```bash
 pnpm changeset
 ```
 
 Choose the bump type:
-- **patch** — bug fixes, dependency updates, docs
+- **patch** — bug fixes, dependency updates, npm-package docs
 - **minor** — new features, non-breaking additions
 - **major** — breaking changes
 
 Write a concise description of what changed. The changeset file is committed with your PR.
+
+Do not create a no-op changeset for Python-only or docs/skills-only changes.
 
 ### Configuration
 
@@ -118,7 +133,7 @@ Verify the repo is ready for release:
 | On `main` or release branch | Yes | Switch to `main`: `git checkout main && git pull` |
 | Clean working tree | Yes | Commit or stash changes (consider `do-commit` first) |
 | All tests pass | Yes | Run full test suite, fix failures |
-| Pending changesets exist | Yes | Run `pnpm changeset` to create one |
+| Pending changesets exist | Yes, when npm packages changed | Run `pnpm changeset` to create one |
 
 ### Step 2: Version + Changelog
 
@@ -127,6 +142,20 @@ pnpm version-packages
 ```
 
 This consumes all `.changeset/*.md` files, bumps versions in all `@lushly-dev/*` package.json files, and appends entries to each package's CHANGELOG.md.
+
+### Python Versioning
+
+For Python-only releases:
+
+```bash
+cd python
+$EDITOR pyproject.toml   # bump version
+cd ..
+git add python/pyproject.toml CHANGELOG.md
+git commit -m "chore(python): release afd <version>"
+git tag python-v<version>
+git push origin main --tags
+```
 
 ### Step 3: Build + Test
 

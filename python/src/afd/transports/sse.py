@@ -1,7 +1,7 @@
 """SSE (Server-Sent Events) transport for MCP communication.
 
-Connects via SSE to receive server-push events and sends requests via
-HTTP POST — matching the TypeScript SseTransport pattern.
+Connects to a live MCP SSE endpoint using the upstream MCP client session
+implementation, then exposes the result through the lighter AFD transport API.
 
 Example:
     >>> from afd.transports import SseTransport
@@ -14,10 +14,8 @@ Example:
 
 from __future__ import annotations
 
-import asyncio
+from contextlib import AsyncExitStack
 from typing import Any, Callable, Dict, List, Optional
-
-import httpx
 
 from afd.transports.base import (
     ToolInfo,
@@ -28,12 +26,7 @@ from afd.transports._mcp_protocol import _HttpBasedTransport
 
 
 class SseTransport(_HttpBasedTransport):
-    """SSE + POST transport for MCP.
-
-    Opens an SSE connection for server-push events and uses POST for
-    JSON-RPC requests.  A background ``asyncio.Task`` runs the SSE
-    listener; tool calls still go through ``_send_request`` (POST).
-    """
+    """SSE transport backed by the upstream MCP client session."""
 
     def __init__(
         self,
@@ -47,111 +40,115 @@ class SseTransport(_HttpBasedTransport):
         on_error: Optional[Callable[[Exception], None]] = None,
     ) -> None:
         super().__init__(url, headers=headers, timeout=timeout, client_name=client_name, client_version=client_version)
-        self._sse_task: Optional[asyncio.Task[None]] = None
         self._on_close = on_close
         self._on_error = on_error
+        self._exit_stack: Optional[AsyncExitStack] = None
+        self._session: Any = None
 
     async def connect(self) -> None:
-        """Connect: create HTTP client, start SSE listener, initialize MCP."""
+        """Connect to the SSE endpoint and initialize an MCP client session."""
         if self._state == TransportState.CONNECTED:
             return
 
         self._state = TransportState.CONNECTING
 
         try:
-            self._client = httpx.AsyncClient()
+            try:
+                from mcp.client.session import ClientSession
+                from mcp.client.sse import sse_client
+            except ImportError as exc:  # pragma: no cover - optional dependency
+                raise ImportError("MCP client dependencies not installed. Install with: pip install afd[client]") from exc
 
-            # Start SSE listener in the background
-            self._sse_task = asyncio.create_task(self._run_sse_listener())
+            self._exit_stack = AsyncExitStack()
+            streams = await self._exit_stack.enter_async_context(
+                sse_client(
+                    self._url,
+                    headers=self._headers,
+                    timeout=self._timeout,
+                )
+            )
+            self._session = await self._exit_stack.enter_async_context(
+                ClientSession(*streams)
+            )
 
-            # MCP initialize handshake (via POST)
-            await self._initialize()
-
+            init_result = await self._session.initialize()
+            self._server_info = (
+                init_result.serverInfo.model_dump(mode="json")
+                if getattr(init_result, "serverInfo", None) is not None
+                else None
+            )
+            self._capabilities = (
+                init_result.capabilities.model_dump(mode="json", exclude_none=True)
+                if getattr(init_result, "capabilities", None) is not None
+                else None
+            )
             self._state = TransportState.CONNECTED
 
         except Exception as exc:
             self._state = TransportState.ERROR
             await self._cleanup()
+            self._report_error(exc)
             if isinstance(exc, TransportError):
                 raise
             raise TransportError(str(exc), cause=exc) from exc
 
     async def disconnect(self) -> None:
-        """Cancel SSE listener and close the HTTP client."""
+        """Close the MCP client session and its underlying streams."""
         await self._cleanup()
         self._state = TransportState.DISCONNECTED
+        if self._on_close:
+            self._on_close()
 
-    # ── SSE listener ──────────────────────────────────────────────────────
+    async def call_tool(
+        self,
+        name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Call a tool through the live MCP session."""
+        if self._session is None:
+            raise RuntimeError("Transport not connected. Call connect() first.")
 
-    async def _run_sse_listener(self) -> None:
-        """Background task that consumes SSE events from the server.
-
-        Uses ``httpx_sse`` when available; falls back to a basic line parser.
-        Server-push events are currently logged/discarded — tool calls use
-        the POST path.  Subclasses can override to handle specific events.
-        """
         try:
-            try:
-                from httpx_sse import aconnect_sse
-            except ImportError:
-                # No httpx_sse — run a minimal keepalive listener
-                await self._run_basic_sse_listener()
-                return
-
-            async with aconnect_sse(
-                self._client,
-                "GET",
-                self._url,
-                headers=self._headers,
-            ) as event_source:
-                async for event in event_source.aiter_sse():
-                    # Server-push events can be handled here in the future.
-                    # For now, we just keep the connection alive.
-                    pass
-
-        except asyncio.CancelledError:
-            return
+            result = await self._session.call_tool(name, arguments or {})
+            payload = result.model_dump(by_alias=True, mode="json", exclude_none=True)
+            return self._extract_content(payload)
         except Exception as exc:
-            if self._on_error:
-                self._on_error(exc)
-            if self._state == TransportState.CONNECTED:
-                self._state = TransportState.ERROR
-                if self._on_close:
-                    self._on_close()
+            self._report_error(exc)
+            if isinstance(exc, TransportError):
+                raise
+            raise TransportError(str(exc), cause=exc) from exc
 
-    async def _run_basic_sse_listener(self) -> None:
-        """Minimal SSE listener without httpx_sse."""
+    async def list_tools(self) -> List[ToolInfo]:
+        """List tools through the live MCP session."""
+        if self._session is None:
+            raise RuntimeError("Transport not connected. Call connect() first.")
+
         try:
-            async with self._client.stream(
-                "GET",
-                self._url,
-                headers={**self._headers, "Accept": "text/event-stream"},
-            ) as response:
-                async for _line in response.aiter_lines():
-                    # Keep connection alive; server-push handling is future work
-                    pass
-        except asyncio.CancelledError:
-            return
+            result = await self._session.list_tools()
+            tools: List[ToolInfo] = []
+            for tool in result.tools:
+                payload = tool.model_dump(by_alias=True, mode="json", exclude_none=True)
+                tools.append(ToolInfo(
+                    name=payload["name"],
+                    description=payload.get("description", ""),
+                    input_schema=payload.get("inputSchema"),
+                    meta=payload.get("_meta"),
+                ))
+            return tools
         except Exception as exc:
-            if self._on_error:
-                self._on_error(exc)
-            if self._state == TransportState.CONNECTED:
-                self._state = TransportState.ERROR
-                if self._on_close:
-                    self._on_close()
-
-    # ── Cleanup ───────────────────────────────────────────────────────────
+            self._report_error(exc)
+            if isinstance(exc, TransportError):
+                raise
+            raise TransportError(str(exc), cause=exc) from exc
 
     async def _cleanup(self) -> None:
-        """Cancel SSE task and close HTTP client."""
-        if self._sse_task and not self._sse_task.done():
-            self._sse_task.cancel()
-            try:
-                await self._sse_task
-            except asyncio.CancelledError:
-                pass
-        self._sse_task = None
+        """Close any active session resources."""
+        if self._exit_stack is not None:
+            await self._exit_stack.aclose()
+        self._exit_stack = None
+        self._session = None
 
-        if self._client:
-            await self._client.aclose()
-            self._client = None
+    def _report_error(self, exc: Exception) -> None:
+        """Notify the optional error callback."""
+        if self._on_error:
+            self._on_error(exc)

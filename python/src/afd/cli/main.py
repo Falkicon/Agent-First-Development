@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import click
 from rich.console import Console
@@ -24,8 +25,11 @@ from afd.cli.output import (
     print_success,
     print_tool_detail,
     print_tools,
+    print_warning,
 )
-from afd.transports import FastMCPTransport, MockTransport, Transport, TransportConfig
+from afd.testing.surface.validate import validate_command_surface
+from afd.testing.surface.types import SurfaceValidationOptions
+from afd.transports import FastMCPTransport, HttpTransport, MockTransport, SseTransport, Transport
 
 # State file for persistent connection info
 STATE_FILE = Path.home() / ".afd" / "state.json"
@@ -71,7 +75,14 @@ def _get_transport(server: str | None = None) -> Transport:
     # Check for mock transport
     if server == "mock" or server.startswith("mock:"):
         return MockTransport()
-    
+
+    parsed = urlparse(server)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        normalized_path = parsed.path.rstrip("/")
+        if normalized_path.endswith("/message") or normalized_path.endswith("/messages"):
+            return HttpTransport(server)
+        return SseTransport(server)
+
     # Default to FastMCP transport
     return FastMCPTransport(server_name=server)
 
@@ -311,17 +322,44 @@ def status(ctx: click.Context) -> None:
 
 @cli.command()
 @click.option("--server", "-s", help="Server to validate")
+@click.option("--surface", is_flag=True, help="Run cross-command surface validation")
+@click.option(
+    "--similarity-threshold",
+    type=float,
+    default=0.7,
+    show_default=True,
+    help="Similarity threshold for surface validation",
+)
+@click.option(
+    "--skip-category",
+    multiple=True,
+    help="Skip a category during surface validation (repeatable)",
+)
+@click.option(
+    "--suppress",
+    multiple=True,
+    help="Suppress a surface validation rule or rule:command pair (repeatable)",
+)
+@click.option("--strict", is_flag=True, help="Treat warnings as errors in validation")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed validation output")
 @click.pass_context
-def validate(ctx: click.Context, server: str | None) -> None:
+def validate(
+    ctx: click.Context,
+    server: str | None,
+    surface: bool,
+    similarity_threshold: float,
+    skip_category: tuple[str, ...],
+    suppress: tuple[str, ...],
+    strict: bool,
+    verbose: bool,
+) -> None:
     """
-    Validate server connection and tools.
-
-    Connects to the server, lists tools, and verifies each can be inspected.
+    Validate server connection/tools, or run cross-command surface validation.
     """
     quiet = ctx.obj.get("quiet", False)
     json_output = ctx.obj.get("json_output", False)
     
-    async def _validate() -> None:
+    async def _validate_connection() -> None:
         transport = _get_transport(server)
         results: dict[str, Any] = {
             "connection": False,
@@ -354,12 +392,170 @@ def validate(ctx: click.Context, server: str | None) -> None:
             sys.exit(1)
         finally:
             await transport.disconnect()
+
+    async def _validate_surface() -> None:
+        transport = _get_transport(server)
+        try:
+            await transport.connect()
+            commands, configured_contexts = await _load_surface_commands(transport)
+            result = validate_command_surface(
+                commands,
+                SurfaceValidationOptions(
+                    similarity_threshold=similarity_threshold,
+                    skip_categories=list(skip_category),
+                    suppressions=list(suppress),
+                    strict=strict,
+                    configured_contexts=configured_contexts or None,
+                ),
+            )
+
+            if json_output:
+                console.print(
+                    json.dumps(
+                        {
+                            "valid": result.valid,
+                            "findings": [
+                                {
+                                    "rule": finding.rule,
+                                    "severity": finding.severity,
+                                    "message": finding.message,
+                                    "commands": finding.commands,
+                                    "suggestion": finding.suggestion,
+                                    "suppressed": finding.suppressed,
+                                    "evidence": finding.evidence,
+                                }
+                                for finding in result.findings
+                            ],
+                            "summary": {
+                                "commandCount": result.summary.command_count,
+                                "errorCount": result.summary.error_count,
+                                "warningCount": result.summary.warning_count,
+                                "infoCount": result.summary.info_count,
+                                "suppressedCount": result.summary.suppressed_count,
+                                "rulesEvaluated": result.summary.rules_evaluated,
+                                "durationMs": result.summary.duration_ms,
+                            },
+                        },
+                        indent=2,
+                    )
+                )
+            else:
+                print_info(f"Surface validation analyzed {result.summary.command_count} commands")
+                severity_buckets = {
+                    "error": [finding for finding in result.findings if not finding.suppressed and finding.severity == "error"],
+                    "warning": [finding for finding in result.findings if not finding.suppressed and finding.severity == "warning"],
+                    "info": [finding for finding in result.findings if not finding.suppressed and finding.severity == "info"],
+                }
+                for severity, findings in severity_buckets.items():
+                    if not findings:
+                        continue
+                    if severity == "error":
+                        print_error(f"{len(findings)} error finding(s)")
+                    elif severity == "warning":
+                        print_warning(f"{len(findings)} warning finding(s)")
+                    else:
+                        print_info(f"{len(findings)} info finding(s)")
+                    for finding in findings:
+                        console.print(f"  [{severity}] {finding.rule}: {finding.message}")
+                        if verbose:
+                            console.print(f"    Commands: {', '.join(finding.commands)}")
+                            console.print(f"    Fix: {finding.suggestion}")
+                            if finding.evidence:
+                                console.print(f"    Evidence: {json.dumps(finding.evidence, sort_keys=True)}")
+
+                if result.summary.suppressed_count:
+                    print_info(f"{result.summary.suppressed_count} finding(s) suppressed")
+
+                if result.valid and result.summary.warning_count == 0:
+                    print_success("Surface validation passed!")
+                elif result.valid:
+                    print_warning("Surface validation passed with warnings")
+                else:
+                    print_error("Surface validation failed")
+                    sys.exit(1)
+        except Exception as e:
+            print_error(f"Surface validation failed: {e}")
+            sys.exit(1)
+        finally:
+            await transport.disconnect()
     
     try:
-        asyncio.run(_validate())
+        asyncio.run(_validate_surface() if surface else _validate_connection())
     except Exception as e:
         print_error(str(e))
         sys.exit(1)
+
+
+async def _load_surface_commands(transport: Transport) -> tuple[list[dict[str, Any]], list[str]]:
+    """Load command surface data using bootstrap tools when available."""
+    tools = await transport.list_tools()
+    tool_names = {tool.name for tool in tools}
+    configured_contexts: list[str] = []
+
+    if "afd-context-list" in tool_names:
+        try:
+            context_result = await transport.call_tool("afd-context-list", {})
+            context_payload = (
+                context_result.get("data", context_result)
+                if isinstance(context_result, dict)
+                else {}
+            )
+            configured_contexts = [
+                item["name"]
+                for item in context_payload.get("contexts", [])
+                if isinstance(item, dict) and "name" in item
+            ]
+        except Exception:
+            configured_contexts = []
+
+    if "afd-help" in tool_names and "afd-schema" in tool_names:
+        help_result = await transport.call_tool("afd-help", {"format": "full"})
+        schema_result = await transport.call_tool("afd-schema", {"format": "json"})
+        help_payload = help_result.get("data", help_result) if isinstance(help_result, dict) else {}
+        schema_payload = (
+            schema_result.get("data", schema_result)
+            if isinstance(schema_result, dict)
+            else {}
+        )
+        schema_map = {
+            item["name"]: item
+            for item in schema_payload.get("schemas", [])
+            if isinstance(item, dict) and "name" in item
+        }
+        commands: list[dict[str, Any]] = []
+        for item in help_payload.get("commands", []):
+            if not isinstance(item, dict):
+                continue
+            schema = schema_map.get(item["name"], {})
+            commands.append(
+                {
+                    "name": item["name"],
+                    "description": item.get("description", ""),
+                    "category": item.get("category"),
+                    "jsonSchema": schema.get("input_schema") or schema.get("inputSchema"),
+                    "outputJsonSchema": (
+                        schema.get("output_schema") or schema.get("outputSchema")
+                    ),
+                    "requires": item.get("requires"),
+                    "contexts": item.get("contexts"),
+                }
+            )
+        return commands, configured_contexts
+
+    commands = []
+    for tool in tools:
+        meta = tool.meta or {}
+        commands.append(
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "jsonSchema": tool.input_schema or {"type": "object", "properties": {}},
+                "outputJsonSchema": meta.get("outputSchema"),
+                "requires": meta.get("requires"),
+                "contexts": meta.get("contexts"),
+            }
+        )
+    return commands, configured_contexts
 
 
 @cli.command()

@@ -277,7 +277,7 @@ class TestMcpClientBatch:
     @pytest.mark.asyncio
     async def test_batch_calls_afd_batch_tool(self):
         transport = MockTransport()
-        transport.add_mock_response("afd.batch", {
+        transport.add_mock_response("afd-batch", {
             "success": True,
             "results": [{"success": True}],
         })
@@ -289,10 +289,12 @@ class TestMcpClientBatch:
 
         assert result["success"] is True
 
-        # Verify it called afd.batch
-        last = transport.last_call("afd.batch")
+        # Verify it called afd-batch and normalized name -> command
+        last = transport.last_call("afd-batch")
         assert last is not None
         assert len(last.arguments["commands"]) == 1
+        assert last.arguments["commands"][0]["command"] == "todo-create"
+        assert "name" not in last.arguments["commands"][0]
 
 
 # ============================================================================

@@ -1,35 +1,29 @@
 """Tests for SseTransport."""
 
-import asyncio
-import json as json_mod
+import sys
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import pytest
-import httpx
 
+from afd.transports.base import ToolExecutionError, TransportError, TransportState
 from afd.transports.sse import SseTransport
-from afd.transports.base import TransportError, TransportState
-
-
-# ============================================================================
-# URL derivation (inherited from _HttpBasedTransport)
-# ============================================================================
 
 
 class TestSseUrlDerivation:
     """Tests for message URL derivation on SSE transport."""
 
-    def test_sse_url_becomes_message(self):
+    def test_sse_url_becomes_messages_endpoint(self):
         t = SseTransport("http://localhost:3100/sse")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
-    def test_bare_url_gets_message(self):
+    def test_bare_url_gets_messages_endpoint(self):
         t = SseTransport("http://localhost:3100")
-        assert t._message_url == "http://localhost:3100/message"
+        assert t._message_url == "http://localhost:3100/messages/"
 
-
-# ============================================================================
-# State transitions
-# ============================================================================
+    def test_legacy_message_url_normalizes_to_messages_endpoint(self):
+        t = SseTransport("http://localhost:3100/message")
+        assert t._message_url == "http://localhost:3100/messages/"
 
 
 class TestSseTransportState:
@@ -42,7 +36,7 @@ class TestSseTransportState:
     @pytest.mark.asyncio
     async def test_connect_sets_connected(self, monkeypatch):
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch)
+        _mock_sse_session(monkeypatch)
 
         await t.connect()
         assert t.state == TransportState.CONNECTED
@@ -51,45 +45,32 @@ class TestSseTransportState:
     @pytest.mark.asyncio
     async def test_disconnect_sets_disconnected(self, monkeypatch):
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch)
+        _mock_sse_session(monkeypatch)
 
         await t.connect()
         await t.disconnect()
         assert t.state == TransportState.DISCONNECTED
 
     @pytest.mark.asyncio
-    async def test_disconnect_cancels_sse_task(self, monkeypatch):
-        t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch)
-
-        await t.connect()
-        assert t._sse_task is not None
-        await t.disconnect()
-        assert t._sse_task is None
-
-    @pytest.mark.asyncio
     async def test_connect_failure_sets_error(self, monkeypatch):
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_failure(monkeypatch)
+        _mock_sse_session(monkeypatch, init_error=RuntimeError("boom"))
 
-        with pytest.raises(TransportError):
+        with pytest.raises(TransportError, match="boom"):
             await t.connect()
         assert t.state == TransportState.ERROR
 
     @pytest.mark.asyncio
     async def test_double_connect_is_noop(self, monkeypatch):
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch)
+        _mock_sse_session(monkeypatch)
 
         await t.connect()
+        first_session = t._session
         await t.connect()
         assert t.state == TransportState.CONNECTED
+        assert t._session is first_session
         await t.disconnect()
-
-
-# ============================================================================
-# call_tool
-# ============================================================================
 
 
 class TestSseCallTool:
@@ -98,11 +79,21 @@ class TestSseCallTool:
     @pytest.mark.asyncio
     async def test_call_tool_returns_parsed_json(self, monkeypatch):
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch, tool_response={"id": "42"})
+        _mock_sse_session(monkeypatch, tool_response={"content": [{"type": "text", "text": "{\"id\": \"42\"}"}], "isError": False})
 
         await t.connect()
         result = await t.call_tool("todo-get", {"id": "42"})
         assert result == {"id": "42"}
+        await t.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_call_tool_raises_tool_execution_error(self, monkeypatch):
+        t = SseTransport("http://localhost:3100/sse")
+        _mock_sse_session(monkeypatch, tool_response={"isError": True, "content": [{"type": "text", "text": "Nope"}]})
+
+        await t.connect()
+        with pytest.raises(ToolExecutionError, match="Nope"):
+            await t.call_tool("todo-get", {"id": "42"})
         await t.disconnect()
 
     @pytest.mark.asyncio
@@ -113,132 +104,120 @@ class TestSseCallTool:
             await t.call_tool("test", {})
 
 
-# ============================================================================
-# list_tools
-# ============================================================================
-
-
 class TestSseListTools:
     """Tests for list_tools via SseTransport."""
 
     @pytest.mark.asyncio
     async def test_list_tools(self, monkeypatch):
-        tools_data = [{"name": "ping", "description": "Pong"}]
+        tools_data = [
+            {
+                "name": "ping",
+                "description": "Pong",
+                "inputSchema": {"type": "object"},
+                "_meta": {"outputSchema": {"type": "object"}},
+            }
+        ]
         t = SseTransport("http://localhost:3100/sse")
-        _mock_sse_responses(monkeypatch, tools_list=tools_data)
+        _mock_sse_session(monkeypatch, tools_list=tools_data)
 
         await t.connect()
         tools = await t.list_tools()
         assert len(tools) == 1
         assert tools[0].name == "ping"
+        assert tools[0].input_schema == {"type": "object"}
+        assert tools[0].meta == {"outputSchema": {"type": "object"}}
         await t.disconnect()
-
-
-# ============================================================================
-# Callbacks
-# ============================================================================
 
 
 class TestSseCallbacks:
     """Tests for on_close and on_error callbacks."""
 
-    def test_callbacks_stored(self):
-        close_called = False
-        error_called = False
+    @pytest.mark.asyncio
+    async def test_disconnect_triggers_on_close(self, monkeypatch):
+        closed = False
 
         def on_close():
-            nonlocal close_called
-            close_called = True
+            nonlocal closed
+            closed = True
+
+        t = SseTransport("http://localhost:3100/sse", on_close=on_close)
+        _mock_sse_session(monkeypatch)
+
+        await t.connect()
+        await t.disconnect()
+        assert closed is True
+
+    @pytest.mark.asyncio
+    async def test_connect_failure_triggers_on_error(self, monkeypatch):
+        errors: list[str] = []
 
         def on_error(exc):
-            nonlocal error_called
-            error_called = True
+            errors.append(str(exc))
 
-        t = SseTransport(
-            "http://localhost:3100/sse",
-            on_close=on_close,
-            on_error=on_error,
-        )
-        assert t._on_close is on_close
-        assert t._on_error is on_error
+        t = SseTransport("http://localhost:3100/sse", on_error=on_error)
+        _mock_sse_session(monkeypatch, init_error=RuntimeError("boom"))
+
+        with pytest.raises(TransportError, match="boom"):
+            await t.connect()
+        assert errors == ["boom"]
 
 
-# ============================================================================
-# Helpers — mock httpx + SSE
-# ============================================================================
+class _FakeModel:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def model_dump(self, **kwargs):
+        return self._payload
 
 
-def _make_jsonrpc_response(result: dict) -> dict:
-    return {"jsonrpc": "2.0", "id": 1, "result": result}
+class _FakeCallToolResult:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def model_dump(self, **kwargs):
+        return self._payload
 
 
-class _FakeAsyncStream:
-    """Fake async iterator for SSE stream mocking."""
-
-    async def aiter_lines(self):
-        # Yield nothing — just a keepalive
-        return
-        yield  # noqa: unreachable — makes this an async generator
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *args):
-        pass
-
-
-def _mock_sse_responses(
+def _mock_sse_session(
     monkeypatch,
     *,
     tool_response: dict | None = None,
-    tools_list: list | None = None,
+    tools_list: list[dict] | None = None,
+    init_error: Exception | None = None,
 ):
-    """Patch httpx.AsyncClient to return predictable responses for SSE transport."""
+    """Patch the upstream MCP SSE/session modules with lightweight fakes."""
 
-    async def mock_post(self_client, url, *, json=None, headers=None, timeout=None):
-        method = json.get("method", "") if json else ""
+    class FakeClientSession:
+        def __init__(self, *streams):
+            self._streams = streams
 
-        if method == "initialize":
-            body = _make_jsonrpc_response({
-                "protocolVersion": "2024-11-05",
-                "serverInfo": {"name": "test-server", "version": "1.0.0"},
-                "capabilities": {},
-            })
-        elif method == "tools/list":
-            body = _make_jsonrpc_response({"tools": tools_list or []})
-        elif method == "tools/call":
-            content_text = json_mod.dumps(tool_response or {})
-            body = _make_jsonrpc_response({
-                "content": [{"type": "text", "text": content_text}],
-            })
-        else:
-            body = _make_jsonrpc_response({})
+        async def __aenter__(self):
+            return self
 
-        return httpx.Response(200, json=body)
+        async def __aexit__(self, *args):
+            return None
 
-    def mock_stream(self_client, method, url, *, headers=None):
-        return _FakeAsyncStream()
+        async def initialize(self):
+            if init_error is not None:
+                raise init_error
+            return SimpleNamespace(
+                serverInfo=_FakeModel({"name": "test-server", "version": "1.0.0"}),
+                capabilities=_FakeModel({}),
+            )
 
-    async def mock_aclose(self_client):
-        pass
+        async def call_tool(self, name, arguments=None):
+            _ = name, arguments
+            payload = tool_response or {"content": [{"type": "text", "text": "{}"}], "isError": False}
+            return _FakeCallToolResult(payload)
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
-    monkeypatch.setattr(httpx.AsyncClient, "stream", mock_stream)
-    monkeypatch.setattr(httpx.AsyncClient, "aclose", mock_aclose)
+        async def list_tools(self):
+            fake_tools = [_FakeModel(item) for item in (tools_list or [])]
+            return SimpleNamespace(tools=fake_tools)
 
+    @asynccontextmanager
+    async def fake_sse_client(url, headers=None, timeout=None):
+        _ = url, headers, timeout
+        yield (object(), object())
 
-def _mock_sse_failure(monkeypatch):
-    """Patch httpx to simulate POST failure during initialize."""
-
-    async def mock_post(self_client, url, *, json=None, headers=None, timeout=None):
-        raise httpx.ConnectError("Connection refused")
-
-    def mock_stream(self_client, method, url, *, headers=None):
-        return _FakeAsyncStream()
-
-    async def mock_aclose(self_client):
-        pass
-
-    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
-    monkeypatch.setattr(httpx.AsyncClient, "stream", mock_stream)
-    monkeypatch.setattr(httpx.AsyncClient, "aclose", mock_aclose)
+    monkeypatch.setitem(sys.modules, "mcp.client.sse", SimpleNamespace(sse_client=fake_sse_client))
+    monkeypatch.setitem(sys.modules, "mcp.client.session", SimpleNamespace(ClientSession=FakeClientSession))

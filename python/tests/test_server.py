@@ -2,6 +2,7 @@
 
 import pytest
 from pydantic import BaseModel
+from mcp.server.fastmcp.exceptions import ToolError
 
 from afd import success, error
 from afd.server import create_server, define_command, MCPServer
@@ -11,6 +12,7 @@ from afd.server.decorators import (
     has_command_metadata,
     command_to_definition,
 )
+from afd.core.commands import CommandExample, ExposeOptions
 
 
 # Test schemas
@@ -78,6 +80,18 @@ class TestDefineCommand:
         metadata = get_command_metadata(tagged_cmd)
         assert metadata.tags == ["category:test", "priority:high"]
 
+    def test_decorator_with_category(self):
+        @define_command(
+            name="category-cmd",
+            description="Categorized command",
+            category="documents",
+        )
+        async def category_cmd(input):
+            return success({})
+
+        metadata = get_command_metadata(category_cmd)
+        assert metadata.category == "documents"
+
     def test_decorator_with_mutation(self):
         @define_command(
             name="mutating-cmd",
@@ -96,15 +110,31 @@ class TestDefineCommand:
             description="With examples",
             examples=[
                 {"name": "John"},
-                {"name": "Jane", "greeting": "Hi"},
+                {"title": "Friendly", "input": {"name": "Jane", "greeting": "Hi"}},
             ],
+            input_schema=GreetInput,
         )
         async def example_cmd(input):
             return success({})
 
         metadata = get_command_metadata(example_cmd)
         assert len(metadata.examples) == 2
-        assert metadata.examples[0] == {"name": "John"}
+        assert metadata.examples[0] == CommandExample(input={"name": "John", "greeting": "Hello"})
+        assert metadata.examples[1] == CommandExample(
+            input={"name": "Jane", "greeting": "Hi"},
+            title="Friendly",
+        )
+
+    def test_decorator_validates_examples_against_schema(self):
+        with pytest.raises(Exception):
+            @define_command(
+                name="invalid-example",
+                description="Invalid example",
+                input_schema=GreetInput,
+                examples=[{"greeting": "Hi"}],
+            )
+            async def invalid_example(input):
+                return success({})
 
     @pytest.mark.asyncio
     async def test_decorated_function_validates_input(self):
@@ -159,9 +189,13 @@ class TestCommandToDefinition:
         @define_command(
             name="convert-test",
             description="Test conversion",
+            category="documents",
             input_schema=GreetInput,
+            output_schema=GreetOutput,
             tags=["test"],
             mutation=True,
+            requires=["setup-run"],
+            contexts=["workspace"],
         )
         async def convert_test(input: GreetInput):
             return success({})
@@ -171,8 +205,12 @@ class TestCommandToDefinition:
         assert definition is not None
         assert definition.name == "convert-test"
         assert definition.description == "Test conversion"
+        assert definition.category == "documents"
         assert definition.tags == ["test"]
         assert definition.mutation is True
+        assert definition.returns == GreetOutput.model_json_schema()
+        assert definition.requires == ["setup-run"]
+        assert definition.contexts == ["workspace"]
 
     def test_extracts_parameters_from_schema(self):
         @define_command(
@@ -309,6 +347,28 @@ class TestMCPServer:
         with pytest.raises(ValueError, match="not decorated"):
             server.register(undecorated)
 
+    @pytest.mark.asyncio
+    async def test_run_async_uses_installed_fastmcp_async_methods(self, monkeypatch):
+        server = create_server("test-app")
+
+        called: list[str] = []
+
+        class DummyMcp:
+            async def run_stdio_async(self):
+                called.append("stdio")
+
+            async def run_sse_async(self):
+                called.append("sse")
+
+            async def run_streamable_http_async(self):
+                called.append("streamable-http")
+
+        monkeypatch.setattr(server, "_create_mcp_server", lambda: DummyMcp())
+
+        await server.run_async("sse")
+
+        assert called == ["sse"]
+
 
 class TestServerIntegration:
     """Integration tests for the server."""
@@ -355,3 +415,26 @@ class TestServerIntegration:
         assert result3.success is True
         assert len(result3.data["items"]) == 2
         assert result3.reasoning == "Found 2 items"
+
+    @pytest.mark.asyncio
+    async def test_live_mcp_call_returns_context_error_for_stale_direct_tool(self):
+        server = create_server(
+            "test-app",
+            tool_strategy="individual",
+            contexts=[{"name": "editing"}, {"name": "reviewing"}],
+        )
+
+        @server.command(
+            name="doc-edit",
+            description="Edit a document",
+            contexts=["editing"],
+            expose=ExposeOptions(mcp=True),
+        )
+        async def doc_edit(input):
+            return success({"ok": True})
+
+        mcp = server._create_mcp_server()
+        await server.call_tool("afd-context-enter", {"context": "reviewing"})
+
+        with pytest.raises(ToolError, match="not available in context 'reviewing'"):
+            await mcp.call_tool("doc-edit", {})
