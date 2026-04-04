@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-03
+
 ### Added
 - Python AFD functional parity for framework-agnostic, agent-visible features:
   - first-class command metadata for output schemas, prerequisites, contexts, validated examples, and explicit grouping categories
