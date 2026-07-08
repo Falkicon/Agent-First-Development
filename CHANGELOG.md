@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-07
+
+### Added
+- `AFDLinter` calibration options: `exclude_story_test_files` (default on) skips story/test files for the UI-directory rules, and `rule_path_excludes` provides per-rule, separator-normalized path excludes (#193)
+- `afd-no-direct-fetch` accuracy: comment-line matches and `fetch('data:...')` string-literal loads no longer flag; new line-scoped `afd-lint-disable: <reason>` inline suppression directive (reason required) (#193)
+- `LintResult` suppression reporting: `suppressed_total`, `suppressed_by_rule`, `suppressed_by_reason`, and `suppressed_summary()` (#193)
+- Dedicated linter test suite (`python/tests/test_linters.py`) (#193)
+
+## [0.7.0] - 2026-04-03
+
 ### Added
 - Python AFD functional parity for framework-agnostic, agent-visible features:
   - first-class command metadata for output schemas, prerequisites, contexts, validated examples, and explicit grouping categories
