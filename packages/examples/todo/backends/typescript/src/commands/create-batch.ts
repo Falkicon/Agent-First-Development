@@ -59,6 +59,7 @@ export const createBatch = defineCommand<typeof inputSchema, BatchCreateResult>(
 	name: 'todo-create-batch',
 	description: 'Create multiple todos at once with partial failure support',
 	category: 'todo',
+	expose: { mcp: true },
 	tags: ['todo', 'create', 'write', 'batch'],
 	mutation: true,
 	version: '1.0.0',

@@ -31,11 +31,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm build
-
-      - name: Test
-        run: pnpm test
+      # Publication is irreversible, so run the same complete gate as CI first.
+      - name: Quality gate
+        run: pnpm check
 
       - name: Create Release PR or Publish
         id: changesets

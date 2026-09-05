@@ -10,6 +10,10 @@ Multi-stack implementation of a Todo application demonstrating **Agent-First Dev
 - **Thin UI**: Frontends are thin surfaces that invoke commands via MCP.
 - **Shared Storage**: Both backends use the same JSON file for data persistence.
 
+The TypeScript commands explicitly set `expose: { mcp: true }`. AFD commands are
+private to external MCP clients by default, so every command intended for a remote
+agent must opt in at its definition.
+
 ## Quick Start
 
 ### 1. Install Dependencies
@@ -25,13 +29,13 @@ The conformance suite validates that a backend correctly implements the required
 **TypeScript Backend:**
 
 ```bash
-npx tsx dx/run-conformance.ts ts
+pnpm test:conformance:ts
 ```
 
 **Python Backend:**
 
 ```bash
-npx tsx dx/run-conformance.ts py
+pnpm test:conformance:py
 ```
 
 ### 3. Start a Backend (Manual)
@@ -46,10 +50,7 @@ pnpm dev
 **Python:**
 
 ```bash
-cd backends/python
-# Ensure PYTHONPATH includes the local afd library
-$env:PYTHONPATH = "../../../python/src"
-python src/server.py
+uv run --project backends/python todo-server
 ```
 
 ### 4. Start a Frontend
@@ -220,7 +221,7 @@ For calling multiple different commands in a single roundtrip, use the `afd.batc
 
 ```bash
 # Execute multiple different commands in one request
-afd batch 'todo-create:{"title":"Task 1"}' 'todo-list:{}' 'todo-stats:{}'
+afd batch '[{"command":"todo-create","input":{"title":"Task 1"}},{"command":"todo-list","input":{}},{"command":"todo-stats","input":{}}]'
 ```
 
 Or via the client SDK:
@@ -231,14 +232,14 @@ import { McpClient } from '@lushly-dev/afd-client';
 const client = new McpClient({ url: 'http://localhost:3100/sse' });
 await client.connect();
 
-const result = await client.batch({
-  commands: [
+const result = await client.batch(
+  [
     { command: 'todo-create', input: { title: 'Task 1' } },
     { command: 'todo-create', input: { title: 'Task 2' } },
     { command: 'todo-list', input: {} }
   ],
-  options: { stopOnError: false }
-});
+  { stopOnError: false }
+);
 
 console.log(result.summary); // { total: 3, successCount: 3, failureCount: 0, skippedCount: 0 }
 console.log(result.confidence); // Aggregated confidence score
@@ -275,4 +276,3 @@ controller.abort();
 ```
 
 See `@lushly-dev/afd-core/batch` and `@lushly-dev/afd-core/streaming` for type definitions.
-

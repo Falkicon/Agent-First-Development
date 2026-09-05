@@ -13,27 +13,18 @@ import type {
 	CommandContext,
 	CommandMiddleware,
 	CommandResult,
-	PipelineContext,
-	PipelineMetadata,
 	PipelineRequest,
 	PipelineResult,
-	StepResult,
 	StreamChunk,
 } from '@lushly-dev/afd-core';
 import {
-	aggregatePipelineAlternatives,
-	aggregatePipelineConfidence,
-	aggregatePipelineReasoning,
-	aggregatePipelineSources,
-	aggregatePipelineWarnings,
-	buildConfidenceBreakdown,
 	createBatchResult,
 	createCompleteChunk,
 	createErrorChunk,
 	createFailedBatchResult,
-	evaluateCondition,
+	executePipeline as executeCorePipeline,
 	failure,
-	resolveVariables,
+	isBatchRequest,
 } from '@lushly-dev/afd-core';
 import type { ZodCommandDefinition } from './schema.js';
 import { formatEnhancedValidationError, validateInputEnhanced } from './validation.js';
@@ -45,6 +36,7 @@ import { formatEnhancedValidationError, validateInputEnhanced } from './validati
 export interface ExecutionDeps {
 	commandMap: Map<string, ZodCommandDefinition>;
 	middleware: CommandMiddleware[];
+	contextState?: { getActive(): string | null };
 	devMode: boolean;
 	onCommand?: (command: string, input: unknown, result: CommandResult) => void;
 	onError?: (error: Error) => void;
@@ -75,6 +67,14 @@ export function createExecutionEngine(deps: ExecutionDeps) {
 			});
 		}
 
+		const activeContext = deps.contextState?.getActive();
+		if (activeContext && command.contexts?.length && !command.contexts.includes(activeContext)) {
+			return failure({
+				code: 'COMMAND_NOT_IN_CONTEXT',
+				message: `Command '${commandName}' is not available in context '${activeContext}'`,
+				suggestion: 'Use afd-context-enter to switch contexts or afd-context-exit to leave.',
+			});
+		}
 		// Validate input with enhanced error messages
 		const validation = validateInputEnhanced(command.inputSchema, input);
 		if (!validation.success) {
@@ -152,84 +152,106 @@ export function createExecutionEngine(deps: ExecutionDeps) {
 		const startTime = performance.now();
 
 		// Validate request
-		if (!request.commands || request.commands.length === 0) {
+		if (!isBatchRequest(request) || request.commands.length === 0) {
 			return createFailedBatchResult(
 				{
 					code: 'INVALID_BATCH_REQUEST',
-					message: 'Batch request must contain at least one command',
-					suggestion: 'Provide an array of commands to execute',
+					message: 'Invalid batch request envelope',
+					suggestion:
+						'Provide nonempty command names, optional string IDs, and valid boolean, timeout, and positive integer parallelism options',
 				},
 				{ startedAt }
 			);
 		}
 
 		const options = request.options ?? {};
-		const results: BatchCommandResult[] = [];
+		const results: Array<BatchCommandResult | undefined> = new Array(request.commands.length);
 		let stopped = false;
+		let timedOut = false;
+		let nextIndex = 0;
+		const batchTraceId = context.traceId ?? `batch-${Date.now()}`;
+		const timeoutError = {
+			code: 'BATCH_TIMEOUT',
+			message: `Batch timeout exceeded (${options.timeout}ms)`,
+			suggestion: 'Increase timeout or reduce the number of batch commands',
+			retryable: true,
+		};
 
-		// Execute commands sequentially
-		for (let i = 0; i < request.commands.length; i++) {
-			const cmd = request.commands[i];
-			if (!cmd) continue;
-
-			if (stopped) {
-				results.push({
-					id: cmd.id ?? `cmd-${i}`,
-					index: i,
+		const worker = async (): Promise<void> => {
+			while (!stopped && !timedOut) {
+				const index = nextIndex++;
+				if (index >= request.commands.length) return;
+				const cmd = request.commands[index];
+				if (!cmd) continue;
+				const remainingMs =
+					options.timeout === undefined
+						? undefined
+						: options.timeout - (performance.now() - startTime);
+				const cmdStartTime = performance.now();
+				const controller = new AbortController();
+				const callerSignal = context.signal instanceof AbortSignal ? context.signal : undefined;
+				const signal = callerSignal
+					? AbortSignal.any([callerSignal, controller.signal])
+					: controller.signal;
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				let result: CommandResult;
+				if (remainingMs !== undefined && remainingMs <= 0) {
+					timedOut = true;
+					result = { success: false, error: timeoutError };
+				} else {
+					const execution = executeCommand(cmd.command, cmd.input, {
+						...context,
+						signal,
+						traceId: `${batchTraceId}-${index}`,
+					});
+					result =
+						remainingMs === undefined
+							? await execution
+							: await Promise.race([
+									execution,
+									new Promise<CommandResult>((resolve) => {
+										timer = setTimeout(() => {
+											timedOut = true;
+											controller.abort();
+											resolve({ success: false, error: timeoutError });
+										}, remainingMs);
+									}),
+								]);
+				}
+				if (timer !== undefined) clearTimeout(timer);
+				results[index] = {
+					id: cmd.id ?? `cmd-${index}`,
+					index,
 					command: cmd.command,
-					result: {
-						success: false,
-						error: {
-							code: 'COMMAND_SKIPPED',
-							message: 'Command skipped due to previous error (stopOnError enabled)',
-						},
-					},
-					durationMs: 0,
-				});
-				continue;
+					result,
+					durationMs: Math.round((performance.now() - cmdStartTime) * 100) / 100,
+				};
+				if (!result.success && options.stopOnError) stopped = true;
 			}
+		};
 
-			const cmdStartTime = performance.now();
-			const result = await executeCommand(cmd.command, cmd.input, {
-				...context,
-				traceId: context.traceId ?? `batch-${Date.now()}-${i}`,
-			});
-			const cmdDuration = performance.now() - cmdStartTime;
-
-			results.push({
-				id: cmd.id ?? `cmd-${i}`,
-				index: i,
+		const parallelism = Math.min(options.parallelism ?? 1, request.commands.length);
+		await Promise.all(Array.from({ length: parallelism }, () => worker()));
+		for (let index = 0; index < request.commands.length; index++) {
+			if (results[index]) continue;
+			const cmd = request.commands[index];
+			if (!cmd) continue;
+			results[index] = {
+				id: cmd.id ?? `cmd-${index}`,
+				index,
 				command: cmd.command,
-				result,
-				durationMs: Math.round(cmdDuration * 100) / 100,
-			});
-
-			if (!result.success && options.stopOnError) {
-				stopped = true;
-			}
-
-			// Check timeout
-			if (options.timeout && performance.now() - startTime > options.timeout) {
-				for (let j = i + 1; j < request.commands.length; j++) {
-					const remainingCmd = request.commands[j];
-					if (!remainingCmd) continue;
-					results.push({
-						id: remainingCmd.id ?? `cmd-${j}`,
-						index: j,
-						command: remainingCmd.command,
-						result: {
+				result: timedOut
+					? { success: false, error: timeoutError }
+					: {
 							success: false,
 							error: {
-								code: 'BATCH_TIMEOUT',
-								message: `Batch timeout exceeded (${options.timeout}ms)`,
-								retryable: true,
+								code: 'COMMAND_SKIPPED',
+								message: 'Command skipped because batch execution stopped after a failure',
+								suggestion: 'Disable stopOnError to execute every command',
 							},
 						},
-						durationMs: 0,
-					});
-				}
-				break;
-			}
+				durationMs: 0,
+			};
 		}
 
 		const completedAt = new Date().toISOString();
@@ -242,8 +264,8 @@ export function createExecutionEngine(deps: ExecutionDeps) {
 			completedAt,
 		};
 
-		return createBatchResult(results, timing, {
-			traceId: context.traceId ?? `batch-${Date.now()}`,
+		return createBatchResult(results as BatchCommandResult[], timing, {
+			traceId: batchTraceId,
 		});
 	}
 
@@ -254,173 +276,7 @@ export function createExecutionEngine(deps: ExecutionDeps) {
 		request: PipelineRequest,
 		context: CommandContext = {}
 	): Promise<PipelineResult> {
-		const startTime = performance.now();
-		const pipelineId =
-			request.id ?? `pipeline-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-
-		// Validate request
-		if (!request.steps || request.steps.length === 0) {
-			return {
-				data: undefined,
-				metadata: {
-					confidence: 0,
-					confidenceBreakdown: [],
-					reasoning: [],
-					warnings: [],
-					sources: [],
-					alternatives: [],
-					executionTimeMs: 0,
-					completedSteps: 0,
-					totalSteps: 0,
-				},
-				steps: [],
-			};
-		}
-
-		const pipelineContext: PipelineContext = {
-			pipelineInput: context as Record<string, unknown>,
-			previousResult: undefined,
-			steps: [],
-		};
-
-		const stepResults: StepResult[] = [];
-		const options = request.options ?? {};
-		let stopped = false;
-
-		for (let i = 0; i < request.steps.length; i++) {
-			const step = request.steps[i];
-			if (!step) continue;
-			const stepStartTime = performance.now();
-
-			// Check if pipeline was stopped by a previous failure
-			if (stopped) {
-				stepResults.push({
-					index: i,
-					alias: step.as,
-					command: step.command,
-					status: 'skipped',
-					executionTimeMs: 0,
-				});
-				continue;
-			}
-
-			// Evaluate when condition if present
-			if (step.when && !evaluateCondition(step.when, pipelineContext)) {
-				stepResults.push({
-					index: i,
-					alias: step.as,
-					command: step.command,
-					status: 'skipped',
-					executionTimeMs: 0,
-				});
-				continue;
-			}
-
-			// Resolve variables in step input
-			const resolvedInput = step.input ? resolveVariables(step.input, pipelineContext) : {};
-
-			// Execute the command
-			const result = await executeCommand(step.command, resolvedInput, {
-				...context,
-				traceId: context.traceId ?? `${pipelineId}-step-${i}`,
-			});
-
-			const stepExecutionTimeMs = performance.now() - stepStartTime;
-
-			if (result.success) {
-				const stepResult: StepResult = {
-					index: i,
-					alias: step.as,
-					command: step.command,
-					status: 'success',
-					data: result.data,
-					executionTimeMs: Math.round(stepExecutionTimeMs * 100) / 100,
-					metadata: {
-						confidence: result.confidence,
-						reasoning: result.reasoning,
-						warnings: result.warnings,
-						sources: result.sources,
-						alternatives: result.alternatives,
-					},
-				};
-				stepResults.push(stepResult);
-				pipelineContext.steps.push(stepResult);
-				pipelineContext.previousResult = stepResult;
-			} else {
-				const stepResult: StepResult = {
-					index: i,
-					alias: step.as,
-					command: step.command,
-					status: 'failure',
-					error: result.error,
-					executionTimeMs: Math.round(stepExecutionTimeMs * 100) / 100,
-				};
-				stepResults.push(stepResult);
-
-				if (!options.continueOnFailure) {
-					stopped = true;
-					// Mark remaining steps as skipped
-					for (let j = i + 1; j < request.steps.length; j++) {
-						const remainingStep = request.steps[j];
-						if (!remainingStep) continue;
-						stepResults.push({
-							index: j,
-							alias: remainingStep.as,
-							command: remainingStep.command,
-							status: 'skipped',
-							executionTimeMs: 0,
-						});
-					}
-					break;
-				}
-			}
-
-			// Check timeout
-			if (options.timeoutMs && performance.now() - startTime > options.timeoutMs) {
-				for (let j = i + 1; j < request.steps.length; j++) {
-					const remainingStep = request.steps[j];
-					if (!remainingStep) continue;
-					stepResults.push({
-						index: j,
-						alias: remainingStep.as,
-						command: remainingStep.command,
-						status: 'skipped',
-						error: {
-							code: 'PIPELINE_TIMEOUT',
-							message: `Pipeline timeout exceeded (${options.timeoutMs}ms)`,
-							retryable: true,
-						},
-						executionTimeMs: 0,
-					});
-				}
-				break;
-			}
-		}
-
-		const totalExecutionTimeMs = performance.now() - startTime;
-
-		// Get the last successful step's data as the pipeline output
-		const lastSuccessfulStep = [...stepResults].reverse().find((s) => s.status === 'success');
-		const finalData = lastSuccessfulStep?.data;
-
-		// Build metadata using helper functions
-		const metadata: PipelineMetadata = {
-			confidence: aggregatePipelineConfidence(stepResults),
-			confidenceBreakdown: buildConfidenceBreakdown(stepResults, request.steps),
-			reasoning: aggregatePipelineReasoning(stepResults),
-			warnings: aggregatePipelineWarnings(stepResults),
-			sources: aggregatePipelineSources(stepResults),
-			alternatives: aggregatePipelineAlternatives(stepResults),
-			executionTimeMs: Math.round(totalExecutionTimeMs * 100) / 100,
-			completedSteps: stepResults.filter((s) => s.status === 'success').length,
-			totalSteps: request.steps.length,
-		};
-
-		return {
-			data: finalData,
-			metadata,
-			steps: stepResults,
-		};
+		return executeCorePipeline(request, executeCommand, context);
 	}
 
 	/**

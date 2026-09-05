@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from afd.core.result import CommandResult, success, error
+from afd.core.result import CommandResult, error, success
 
 
 @dataclass

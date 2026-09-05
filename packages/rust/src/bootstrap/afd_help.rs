@@ -76,7 +76,10 @@ impl CommandHandler for AfdHelpHandler {
                     let tag_match = cmd
                         .tags
                         .as_ref()
-                        .map(|tags| tags.iter().any(|t| t.to_lowercase().contains(&filter_lower)))
+                        .map(|tags| {
+                            tags.iter()
+                                .any(|t| t.to_lowercase().contains(&filter_lower))
+                        })
                         .unwrap_or(false);
                     let category_match = cmd
                         .category

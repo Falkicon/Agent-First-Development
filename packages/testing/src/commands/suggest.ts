@@ -1,3 +1,5 @@
+// afd-override: max-lines=800
+// Suggestion strategies share scoring types and helpers; this bounded exception avoids fragmentation.
 /**
  * @fileoverview scenario-suggest command
  *

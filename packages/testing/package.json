@@ -47,13 +47,13 @@
 	"sideEffects": false,
 	"dependencies": {
 		"@lushly-dev/afd-core": "workspace:*",
-		"yaml": "^2.8.2"
+		"yaml": "^2.9.0"
 	},
 	"devDependencies": {
-		"@vitest/coverage-v8": "^4.1.0",
+		"@vitest/coverage-v8": "^4.1.11",
 		"rimraf": "^6.1.3",
 		"typescript": "^5.9.3",
-		"vitest": "^4.1.0"
+		"vitest": "^4.1.11"
 	},
 	"peerDependencies": {
 		"vitest": ">=1.0.0"

@@ -80,6 +80,18 @@ const middleware = createAuthMiddleware(adapter, {
 
 Requires `@lushly-dev/afd-server` + `zod` as peer dependencies.
 
+The command factory is an optional integration and lives at the explicit
+`@lushly-dev/afd-auth/commands` subpath. Existing consumers should migrate
+from the root import:
+
+```typescript
+// Before
+import { createAuthCommands } from '@lushly-dev/afd-auth';
+
+// After
+import { createAuthCommands } from '@lushly-dev/afd-auth/commands';
+```
+
 ## Error Handling
 
 ```typescript
@@ -113,7 +125,7 @@ adapter._getListenerCount();
 ### useConvexAuthAdapter (React Hook)
 
 ```typescript
-import { useConvexAuthAdapter } from '@lushly-dev/afd-auth';
+import { useConvexAuthAdapter } from '@lushly-dev/afd-auth/react';
 
 const adapter = useConvexAuthAdapter({
   useAuthActions: () => useAuthActions(),
@@ -136,7 +148,7 @@ adapter.dispose(); // cleanup
 
 ## React Hooks
 
-Sub-path import — no React dependency on main entrypoint:
+Sub-path import — no React dependency on the main entrypoint:
 
 ```typescript
 import { createAuthHooks } from '@lushly-dev/afd-auth/react';
@@ -172,11 +184,11 @@ BroadcastChannel primary, localStorage `storage` event fallback. SSR-safe.
 
 ```
 packages/auth/src/
-├── index.ts              # Main export (zero React dependency)
+├── index.ts              # Main export (core only; zero React/server/zod imports)
 ├── types.ts              # AuthAdapter, AuthSessionState, Session, User
 ├── errors.ts             # AuthAdapterError, AuthErrorCode
 ├── middleware.ts          # createAuthMiddleware()
-├── commands.ts            # createAuthCommands()
+├── commands.ts            # Sub-path: createAuthCommands()
 ├── session-sync.ts        # SessionSync class
 ├── react.ts              # Sub-path: createAuthHooks()
 └── adapters/

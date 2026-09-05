@@ -17,7 +17,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `pnpm lint:fix` | Auto-fix lint issues |
 | `pnpm typecheck` | TypeScript type checking |
 | `pnpm check` | Quality gate (lint + build + typecheck + test:coverage) — mirrors CI exactly |
-| `pnpm release patch` | Release: bump versions, update CHANGELOG, run quality gate, commit, tag |
+| `pnpm changeset` | Create a changeset describing your change and its semver impact |
+| `pnpm version-packages` | Consume changesets, bump versions, update CHANGELOGs |
 | `pnpm publish:npm` | Publish all @lushly-dev/* packages to npm |
 | `cd packages/server && pnpm vitest run src/server.test.ts` | Run single test file |
 
@@ -62,14 +63,14 @@ alfred/  # Quality bot — lint, parity, quality (see alfred/AGENTS.md)
 | **Pre-push** (lefthook) | `git push` | Full lint, test, typecheck, portability, file-size, orphan-files |
 | **Quality gate** (`pnpm check`) | On-demand / release script | lint → build → typecheck → test:coverage + portability, file-size, orphan-files |
 | **CI** (GitHub Actions) | Push to main / PR | Same as quality gate — safety net for skipped hooks |
-| **Release** (GitHub Actions) | Tag push `v*` | Build → test → publish to npm with provenance → GitHub Release |
+| **Release** (GitHub Actions) | Push to main | `pnpm check` → Changesets opens a version PR or publishes to npm |
 
 **Key rules:**
 - Always run `pnpm check` before pushing — catches everything CI would catch
-- Never use Changesets or external version managers — `scripts/release.mjs` owns versioning
+- Changesets manages versioning — run `pnpm changeset` to describe publishable package changes
 - All `@lushly-dev/*` packages share one version (fixed versioning)
-- Release workflow triggers on `v*` tag push, not branch push
-- Agent release flow: `pnpm release patch` → `git push origin main --tags`
+- Release flow: merge a PR with changesets → the Release workflow opens a release PR → merge it → the workflow runs `pnpm check` and publishes
+- Agent release flow: `pnpm changeset` → commit the changeset file → merge through the normal PR workflow
 
 ## Skill Index
 

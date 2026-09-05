@@ -4,45 +4,12 @@
  * Execute a command with streaming results and real-time progress.
  */
 
-import { createClient, type McpClient } from '@lushly-dev/afd-client';
 import type { StreamChunk } from '@lushly-dev/afd-core';
 import { isCompleteChunk, isDataChunk, isErrorChunk, isProgressChunk } from '@lushly-dev/afd-core';
 import chalk from 'chalk';
 import type { Command } from 'commander';
-import { getConfig } from '../config.js';
+import { ensureConnected } from '../connection.js';
 import { type OutputFormat, printError } from '../output.js';
-import { getClient, setClient } from './connect.js';
-
-/**
- * Ensure we have a connected client, auto-connecting if needed.
- */
-async function ensureConnected(): Promise<McpClient | null> {
-	let client = getClient();
-
-	if (client?.isConnected()) {
-		return client;
-	}
-
-	// Try to auto-connect using saved URL
-	const config = getConfig();
-	if (!config.serverUrl) {
-		return null;
-	}
-
-	client = createClient({
-		url: config.serverUrl,
-		transport: 'http',
-		timeout: config.timeout ?? 30000,
-	});
-
-	try {
-		await client.connect();
-		setClient(client);
-		return client;
-	} catch {
-		return null;
-	}
-}
 
 /**
  * Register the stream command.

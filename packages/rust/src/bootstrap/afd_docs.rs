@@ -55,7 +55,11 @@ impl AfdDocsHandler {
 
         lines.push(format!(
             "**Mutation:** {}",
-            if cmd.mutation { "Yes" } else { "No (read-only)" }
+            if cmd.mutation {
+                "Yes"
+            } else {
+                "No (read-only)"
+            }
         ));
         lines.push(String::new());
 
@@ -108,10 +112,7 @@ impl CommandHandler for AfdDocsHandler {
             return success_with(
                 serde_json::to_value(output).unwrap(),
                 ResultOptions {
-                    reasoning: Some(format!(
-                        "Command \"{}\" not found",
-                        input.command.unwrap()
-                    )),
+                    reasoning: Some(format!("Command \"{}\" not found", input.command.unwrap())),
                     confidence: Some(1.0),
                     ..Default::default()
                 },

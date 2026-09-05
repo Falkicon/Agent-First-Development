@@ -13,7 +13,7 @@ const viewStateEntrySchema = z.object({
  * Creates the 3 AFD commands for view state management.
  *
  * - `view-state-get` — read current state for a UI surface
- * - `view-state-set` — apply partial state (with undo support)
+ * - `view-state-set` — apply partial or complete state (with capability-aware undo)
  * - `view-state-list` — list all registered view states
  */
 export function createViewStateCommands(registry: ViewStateRegistry) {
@@ -50,13 +50,17 @@ export function createViewStateCommands(registry: ViewStateRegistry) {
 
 	const viewStateSet = defineCommand({
 		name: 'view-state-set',
-		description: 'Apply partial state to a registered UI surface',
+		description: 'Apply partial or complete state to a registered UI surface',
 		category: 'view-state',
 		mutation: true,
 		executionTime: 'instant',
 		input: z.object({
 			id: z.string().describe('The registered view state ID'),
 			state: stateSchema.describe('Partial state to merge'),
+			replace: z
+				.boolean()
+				.optional()
+				.describe('Replace the complete state; requires a handler with replace support'),
 		}),
 		output: z.object({
 			id: z.string(),
@@ -82,15 +86,40 @@ export function createViewStateCommands(registry: ViewStateRegistry) {
 					suggestion: 'Use view-state-list to see all registered view states',
 				});
 			}
-			const previous = registry.set(input.id, input.state);
+			if (input.replace && !registry.supportsReplace(input.id)) {
+				return failure({
+					code: 'VIEW_STATE_REPLACE_UNSUPPORTED',
+					message: `View state "${input.id}" does not support complete replacement`,
+					suggestion:
+						'Register a replace(state) handler or omit replace to use partial state merging',
+				});
+			}
+
+			const canUndo = registry.supportsReplace(input.id);
+			const previous = input.replace
+				? registry.replace(input.id, input.state)
+				: registry.set(input.id, input.state);
 			const current = registry.get(input.id) ?? {};
 			return success(
 				{ id: input.id, state: current, previous },
 				{
 					reasoning: `Updated view state for "${input.id}"`,
 					confidence: 1.0,
-					undoCommand: 'view-state-set',
-					undoArgs: { id: input.id, state: previous },
+					...(canUndo
+						? {
+								undoCommand: 'view-state-set',
+								undoArgs: { id: input.id, state: previous, replace: true },
+							}
+						: {
+								warnings: [
+									{
+										code: 'VIEW_STATE_UNDO_UNAVAILABLE',
+										message:
+											'Exact undo is unavailable because this handler only supports partial state merging',
+										severity: 'warning' as const,
+									},
+								],
+							}),
 				}
 			);
 		},

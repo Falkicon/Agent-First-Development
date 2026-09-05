@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve structured command failures and partial batch/pipeline results across the MCP client and server; use the canonical batch tool and POST streaming transport (#195).
+- Enforce MCP command exposure across discovery and execution routes, validate HTTP Host/Origin and request bodies, and clean up stream connections and middleware lifecycle state (#196, #206, #209).
+- Bound client connection/request timeouts and reconnect attempts; cancel pending reconnects and stream readers when callers disconnect or stop consuming (#198, #208).
+- Retire stale handoff connections and failed SSE handshakes, and allow initialization during successful automatic reconnects (#221, #223).
+- Restore stable auth snapshots, propagate provider-returned errors, close React subscription races, and track refresh-lock ownership (#197, #210).
+- Restore exact view-state undo when handlers support replacement, encode database IDs, preserve numeric sorting, and distinguish missing records from transport failures (#203, #204).
+- Honor batch concurrency, stop, and deadline controls across TypeScript, Python, and Rust; preserve pipeline step positions and reject unsupported parallel pipeline execution (#207, #214, #216, #217).
+- Correct Rust stream serialization and signed JSON-RPC request IDs (#215).
+- Repair CLI persisted connections, scenario argument forwarding, remote metadata validation, and runtime version reporting; repair Todo onboarding and Alfred base installation (#200, #201, #211–#213).
+- Run real coverage and file-size checks in the repository quality gate and align release checks and documentation with the current release workflow (#202, #205, #218).
+- Validate complete batch/pipeline requests before invoking handlers, avoiding unreported partial writes on malformed input (#219).
+- Reject deadline options before execution in Rust builds without the native runtime feature (#220).
+- Repair showcase command registration types and include showcase demos in recursive typechecking (#224).
+
+### Changed
+
+- **Migration:** remotely callable TypeScript commands must declare `expose: { mcp: true }`; the server now enforces the existing MCP opt-in contract. Public examples include this declaration. See the server README for HTTP host and origin configuration.
+- Refresh dependency ranges and the lockfile to address known advisory matches (#199).
+- **Migration:** import React auth integrations from `@lushly-dev/afd-auth/react` and command construction from `@lushly-dev/afd-auth/commands`; core auth imports no longer load optional integrations (#222).
+
+### Added
+
+- Regression tests across runtime, security, auth, CLI, database, execution controls, and repository tooling; dedicated Alfred CI checks.
+- A detailed review record at `docs/reviews/2026-09-05-review.md` (#194).
+
 ## [0.8.0] - 2026-07-07
 
 ### Added

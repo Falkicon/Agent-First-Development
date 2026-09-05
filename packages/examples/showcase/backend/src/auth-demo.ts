@@ -4,7 +4,8 @@
  * Exercises: MockAuthAdapter, createAuthMiddleware, createAuthCommands
  */
 
-import { createAuthCommands, createAuthMiddleware, MockAuthAdapter } from '@lushly-dev/afd-auth';
+import { createAuthMiddleware, MockAuthAdapter } from '@lushly-dev/afd-auth';
+import { createAuthCommands } from '@lushly-dev/afd-auth/commands';
 import { success } from '@lushly-dev/afd-core';
 import { createMcpServer, defineCommand } from '@lushly-dev/afd-server';
 import { z } from 'zod';

@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const script = join(dirname(fileURLToPath(import.meta.url)), 'check-file-size.mjs');
+
+function fixture(lines, head = '') {
+	return `${head}${Array.from({ length: lines }, (_, index) => `export const value${index} = ${index};`).join('\n')}\n`;
+}
+
+test('no-argument mode discovers and rejects oversized source files', () => {
+	const root = mkdtempSync(join(tmpdir(), 'afd-file-size-'));
+	mkdirSync(join(root, 'packages', 'demo', 'src'), { recursive: true });
+	writeFileSync(join(root, 'packages', 'demo', 'src', 'large.ts'), fixture(501));
+
+	const result = spawnSync(process.execPath, [script], { cwd: root, encoding: 'utf8' });
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /large\.ts/);
+	assert.match(result.stderr, /1 file size violation/);
+});
+
+test('discovery skips tests and honors a bounded override', () => {
+	const root = mkdtempSync(join(tmpdir(), 'afd-file-size-'));
+	const source = join(root, 'packages', 'demo', 'src');
+	mkdirSync(source, { recursive: true });
+	writeFileSync(join(source, 'large.test.ts'), fixture(501));
+	writeFileSync(
+		join(source, 'intentional.ts'),
+		fixture(550, '// afd-override: max-lines=600\n// Cohesive generated command catalog.\n')
+	);
+
+	const output = execFileSync(process.execPath, [script], { cwd: root, encoding: 'utf8' });
+	assert.match(output, /1 file\(s\) with afd-override/);
+});
+
+test('explicit staged-file mode still checks only supplied paths', () => {
+	const root = mkdtempSync(join(tmpdir(), 'afd-file-size-'));
+	const source = join(root, 'packages', 'demo', 'src');
+	mkdirSync(source, { recursive: true });
+	writeFileSync(join(source, 'large.ts'), fixture(501));
+	writeFileSync(join(source, 'small.ts'), fixture(20));
+
+	const result = spawnSync(process.execPath, [script, join(source, 'small.ts')], {
+		cwd: root,
+		encoding: 'utf8',
+	});
+	assert.equal(result.status, 0);
+	assert.doesNotMatch(result.stderr, /large\.ts/);
+});

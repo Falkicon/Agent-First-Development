@@ -1,5 +1,7 @@
 """Tests for pipeline types and execution."""
 
+import asyncio
+
 import pytest
 
 from afd import success, error
@@ -770,6 +772,50 @@ class TestExecutePipeline:
         assert result.metadata.confidence == 0.87
         assert len(result.metadata.confidence_breakdown) == 2
         assert len(result.metadata.reasoning_steps) == 2
+
+    @pytest.mark.asyncio
+    async def test_pipeline_timeout_interrupts_current_step(self):
+        cancelled = False
+
+        async def slow_executor(command: str, input: dict):
+            nonlocal cancelled
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            return success({"late": True})
+
+        result = await execute_pipeline(
+            PipelineRequest(
+                steps=[PipelineStep(command="slow-step")],
+                options=PipelineOptions(timeout_ms=5),
+            ),
+            slow_executor,
+        )
+
+        assert cancelled is True
+        assert result.steps[0].error.code == "PIPELINE_TIMEOUT"
+
+    @pytest.mark.asyncio
+    async def test_parallel_pipeline_rejected_before_execution(self):
+        calls = 0
+
+        async def executor(command: str, input: dict):
+            nonlocal calls
+            calls += 1
+            return success({})
+
+        result = await execute_pipeline(
+            PipelineRequest(
+                steps=[PipelineStep(command="never-run")],
+                options=PipelineOptions(parallel=True),
+            ),
+            executor,
+        )
+
+        assert calls == 0
+        assert result.steps[0].error.code == "UNSUPPORTED_OPTION"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -5,24 +5,11 @@
 import { createClient, type McpClient } from '@lushly-dev/afd-client';
 import type { Command } from 'commander';
 import ora from 'ora';
-import { setConfig } from '../config.js';
+import { deleteConfig, getConfig, setConfig } from '../config.js';
+import { ensureConnected, getClient, setClient } from '../connection.js';
 import { printError, printStatus, printSuccess } from '../output.js';
 
-let activeClient: McpClient | null = null;
-
-/**
- * Get the active client.
- */
-export function getClient(): McpClient | null {
-	return activeClient;
-}
-
-/**
- * Set the active client.
- */
-export function setClient(client: McpClient | null): void {
-	activeClient = client;
-}
+export { getClient, setClient } from '../connection.js';
 
 /**
  * Register the connect command.
@@ -40,20 +27,22 @@ export function registerConnectCommand(program: Command): void {
 
 			try {
 				// Disconnect existing client
-				if (activeClient) {
-					await activeClient.disconnect();
+				const existingClient = getClient();
+				if (existingClient) {
+					await existingClient.disconnect();
 				}
 
 				// Create new client
-				activeClient = createClient({
+				const client: McpClient = createClient({
 					url,
 					transport: options.transport as 'sse' | 'http',
 					timeout: Number.parseInt(options.timeout, 10),
 					autoReconnect: options.reconnect !== false,
 				});
+				setClient(client);
 
 				// Connect
-				const result = await activeClient.connect();
+				const result = await client.connect();
 
 				spinner.succeed('Connected');
 				console.log();
@@ -65,9 +54,16 @@ export function registerConnectCommand(program: Command): void {
 					serverVersion: result.serverInfo.version,
 				});
 
-				// Save URL for future use
+				// Save every option needed to reproduce this connection in another process.
 				setConfig('serverUrl', url);
+				setConfig('transport', options.transport as 'sse' | 'http');
+				setConfig('timeout', Number.parseInt(options.timeout, 10));
+				setConfig('autoReconnect', options.reconnect !== false);
 			} catch (error) {
+				await getClient()
+					?.disconnect()
+					.catch(() => undefined);
+				setClient(null);
 				spinner.fail('Connection failed');
 				printError('Could not connect to server', error instanceof Error ? error : undefined);
 				process.exit(1);
@@ -83,13 +79,18 @@ export function registerDisconnectCommand(program: Command): void {
 		.command('disconnect')
 		.description('Disconnect from the MCP server')
 		.action(async () => {
-			if (!activeClient) {
+			const hadStoredConnection = Boolean(getConfig().serverUrl);
+			const client = getClient();
+			if (!client && !hadStoredConnection) {
 				printError('Not connected to any server');
 				return;
 			}
 
-			await activeClient.disconnect();
-			activeClient = null;
+			await client?.disconnect();
+			setClient(null);
+			deleteConfig('serverUrl');
+			deleteConfig('transport');
+			deleteConfig('autoReconnect');
 			printSuccess('Disconnected');
 		});
 }
@@ -101,13 +102,14 @@ export function registerStatusCommand(program: Command): void {
 	program
 		.command('status')
 		.description('Show connection status')
-		.action(() => {
-			if (!activeClient) {
+		.action(async () => {
+			const client = await ensureConnected();
+			if (!client) {
 				printStatus({ connected: false });
 				return;
 			}
 
-			const status = activeClient.getStatus();
+			const status = client.getStatus();
 			printStatus({
 				connected: status.state === 'connected',
 				url: status.url,

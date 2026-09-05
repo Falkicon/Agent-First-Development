@@ -67,6 +67,8 @@ class BatchOptions(BaseModel):
     timeout: Optional[int] = Field(default=None, ge=0)
     parallelism: int = Field(default=1, ge=1)
 
+    model_config = {"extra": "forbid"}
+
 
 class BatchRequest(BaseModel):
     """A batch request containing multiple commands to execute.
@@ -316,8 +318,14 @@ def create_batch_result(
         A complete BatchResult object.
     """
     success_count = sum(1 for r in results if r.result.success)
-    failure_count = sum(1 for r in results if not r.result.success)
-    skipped_count = len(results) - success_count - failure_count
+    skipped_count = sum(
+        1
+        for r in results
+        if not r.result.success
+        and r.result.error is not None
+        and r.result.error.code == "COMMAND_SKIPPED"
+    )
+    failure_count = len(results) - success_count - skipped_count
 
     summary = BatchSummary(
         total=len(results),

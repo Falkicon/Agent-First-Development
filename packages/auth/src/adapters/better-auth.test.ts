@@ -106,6 +106,75 @@ describe('BetterAuthAdapter', () => {
 		adapter.dispose();
 	});
 
+	it('updates the snapshot when an authenticated user changes', () => {
+		const { client, _emit } = createMockClient();
+		const adapter = new BetterAuthAdapter({ client });
+		const states: AuthSessionState[] = [];
+		adapter.onAuthStateChange((state) => states.push(state));
+
+		_emit({
+			data: {
+				session: { id: 's1', expiresAt: '2026-12-31T00:00:00Z' },
+				user: { id: 'u1', email: 'one@example.com' },
+			},
+			isPending: false,
+		});
+		_emit({
+			data: {
+				session: { id: 's2', expiresAt: '2026-12-31T00:00:00Z' },
+				user: { id: 'u2', email: 'two@example.com' },
+			},
+			isPending: false,
+		});
+
+		expect(states).toHaveLength(2);
+		const session = adapter.getSession();
+		expect(session.status).toBe('authenticated');
+		if (session.status === 'authenticated') {
+			expect(session.user.id).toBe('u2');
+			expect(session.user.email).toBe('two@example.com');
+		}
+
+		adapter.dispose();
+	});
+
+	it('updates refreshed session and profile fields without a status transition', () => {
+		const { client, _emit } = createMockClient();
+		const adapter = new BetterAuthAdapter({ client });
+		const states: AuthSessionState[] = [];
+		adapter.onAuthStateChange((state) => states.push(state));
+
+		const data = {
+			session: { id: 's1', expiresAt: '2026-12-31T00:00:00Z' },
+			user: { id: 'u1', email: 'one@example.com', name: 'One' },
+		};
+		_emit({ data, isPending: false });
+		_emit({
+			data: {
+				session: { ...data.session, expiresAt: '2027-01-01T00:00:00Z' },
+				user: { ...data.user, name: 'Updated' },
+			},
+			isPending: false,
+		});
+		_emit({
+			data: {
+				session: { id: 's1', expiresAt: '2027-01-01T00:00:00Z' },
+				user: { id: 'u1', email: 'one@example.com', name: 'Updated' },
+			},
+			isPending: false,
+		});
+
+		expect(states).toHaveLength(2);
+		const session = adapter.getSession();
+		expect(session.status).toBe('authenticated');
+		if (session.status === 'authenticated') {
+			expect(session.session.expiresAt).toEqual(new Date('2027-01-01T00:00:00Z'));
+			expect(session.user.name).toBe('Updated');
+		}
+
+		adapter.dispose();
+	});
+
 	it('delegates signIn email to client', async () => {
 		const { client } = createMockClient();
 		const adapter = new BetterAuthAdapter({ client });
@@ -141,6 +210,57 @@ describe('BetterAuthAdapter', () => {
 		await adapter.signOut();
 
 		expect(client.signOut).toHaveBeenCalled();
+
+		adapter.dispose();
+	});
+
+	it('maps a resolved credentials 401 to invalid credentials', async () => {
+		const { client } = createMockClient();
+		client.signIn.email.mockResolvedValue({
+			data: null,
+			error: { status: 401, message: 'Invalid credentials' },
+		});
+		const adapter = new BetterAuthAdapter({ client });
+
+		await expect(
+			adapter.signIn({ method: 'credentials', email: 'test@example.com', password: 'wrong' })
+		).rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', retryable: false });
+
+		adapter.dispose();
+	});
+
+	it('maps resolved social and sign-out errors to provider errors', async () => {
+		const { client } = createMockClient();
+		client.signIn.social.mockResolvedValue({
+			data: null,
+			error: { status: 502, message: 'GitHub unavailable' },
+		});
+		client.signOut.mockResolvedValue({
+			data: null,
+			error: { status: 500, message: 'Sign-out unavailable' },
+		});
+		const adapter = new BetterAuthAdapter({ client });
+
+		await expect(adapter.signIn({ method: 'oauth', provider: 'github' })).rejects.toMatchObject({
+			code: 'PROVIDER_ERROR',
+			retryable: false,
+		});
+		await expect(adapter.signOut()).rejects.toMatchObject({
+			code: 'PROVIDER_ERROR',
+			retryable: false,
+		});
+
+		adapter.dispose();
+	});
+
+	it('maps a thrown network failure to a retryable network error', async () => {
+		const { client } = createMockClient();
+		client.signIn.email.mockRejectedValue(new Error('Failed to fetch'));
+		const adapter = new BetterAuthAdapter({ client });
+
+		await expect(
+			adapter.signIn({ method: 'credentials', email: 'test@example.com', password: 'pass' })
+		).rejects.toMatchObject({ code: 'NETWORK_ERROR', retryable: true });
 
 		adapter.dispose();
 	});

@@ -5,8 +5,8 @@ Python implementation of the Todo API using FastMCP.
 ## Quick Start
 
 ```bash
-pip install -r requirements.txt
-python server.py
+uv sync
+uv run todo-server
 ```
 
 Server runs at `http://localhost:3101`.
@@ -29,13 +29,13 @@ By default, the server uses **file-based storage** (`../data/todos.json`) so tha
 
 ```bash
 # Default: file storage, shared with TypeScript backend
-python server.py
+uv run todo-server
 
 # Use in-memory storage (isolated per process)
-TODO_STORE_TYPE=memory python server.py
+TODO_STORE_TYPE=memory uv run todo-server
 
 # Custom storage path
-TODO_STORE_PATH=/path/to/todos.json python server.py
+TODO_STORE_PATH=/path/to/todos.json uv run todo-server
 ```
 
 ## Commands
@@ -59,5 +59,5 @@ TODO_STORE_PATH=/path/to/todos.json python server.py
 Run conformance tests:
 
 ```bash
-BACKEND_URL=http://localhost:3101 pnpm example:todo:test
+pnpm --dir ../.. test:conformance:py
 ```

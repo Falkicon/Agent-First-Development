@@ -5,14 +5,12 @@
 	"type": "module",
 	"description": "Multi-stack Todo example with AFD patterns",
 	"scripts": {
-		"test:conformance:ts": "ts-node dx/run-conformance.ts --backend ts",
-		"test:conformance:py": "ts-node dx/run-conformance.ts --backend py",
+		"test:conformance:ts": "pnpm --dir backends/typescript build && tsx dx/run-conformance.ts --backend ts",
+		"test:conformance:py": "tsx dx/run-conformance.ts --backend py",
 		"dev:ts": "cd backends/typescript && pnpm dev",
-		"dev:py": "cd backends/python && pnpm dev",
+		"dev:py": "uv run --project backends/python todo-server",
 		"dev:web": "cd frontends/vanilla && npx serve .",
-		"dev:react": "cd frontends/react && pnpm dev",
-		"dev:desktop": "cd frontends/desktop && pnpm tauri:dev",
-		"build:desktop": "cd frontends/desktop && pnpm tauri:build"
+		"dev:react": "cd frontends/react && pnpm dev"
 	},
 	"devDependencies": {
 		"@modelcontextprotocol/sdk": "^1.0.1",

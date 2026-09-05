@@ -324,7 +324,10 @@ mod tests {
 
         assert_eq!(source.name, "MDN Web Docs");
         assert_eq!(source.source_type, SourceType::Url);
-        assert_eq!(source.url, Some("https://developer.mozilla.org".to_string()));
+        assert_eq!(
+            source.url,
+            Some("https://developer.mozilla.org".to_string())
+        );
         assert_eq!(source.relevance, Some(0.95));
     }
 

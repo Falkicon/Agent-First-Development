@@ -1,4 +1,4 @@
-// afd-override: max-lines=950 — DirectTransport + DirectClient + pipe() are tightly coupled via shared registry/context
+// afd-override: max-lines=750 — public in-process client APIs and their examples; pipeline execution delegates to core
 /**
  * @fileoverview Direct Transport for zero-overhead in-process command execution
  *
@@ -35,26 +35,11 @@ import type {
 	McpRequest,
 	McpResponse,
 	McpTool,
-	PipelineContext,
-	PipelineMetadata,
 	PipelineRequest,
 	PipelineResult,
 	PipelineStep,
-	ResultMetadata,
-	StepResult,
 } from '@lushly-dev/afd-core';
-import {
-	aggregatePipelineAlternatives,
-	aggregatePipelineConfidence,
-	aggregatePipelineReasoning,
-	aggregatePipelineSources,
-	aggregatePipelineWarnings,
-	buildConfidenceBreakdown,
-	evaluateCondition,
-	failure,
-	resolveVariables,
-	validationError,
-} from '@lushly-dev/afd-core';
+import { executePipeline, failure, validationError } from '@lushly-dev/afd-core';
 import type { CommandDefinition } from './direct-validation.js';
 import { validateInput } from './direct-validation.js';
 import type {
@@ -656,208 +641,20 @@ export class DirectClient {
 		request: PipelineRequest | PipelineStep[],
 		context?: DirectCallContext
 	): Promise<PipelineResult<T>> {
-		const startTime = performance.now();
 		const traceId = context?.traceId ?? generateTraceId();
-
-		// Normalize request
 		const pipelineRequest: PipelineRequest = Array.isArray(request) ? { steps: request } : request;
-
-		const { steps: stepDefs, options = {} } = pipelineRequest;
-		const { continueOnFailure = false, timeoutMs } = options;
-
-		this.debug(`[${traceId}] Starting pipeline with ${stepDefs.length} steps`);
-
-		// Initialize pipeline context
-		const pipelineContext: PipelineContext = {
-			pipelineInput: undefined,
-			steps: [],
-			previousResult: undefined,
-		};
-
-		const stepResults: StepResult[] = [];
-		let finalData: unknown;
-		let pipelineFailed = false;
-
-		// Execute each step
-		for (let i = 0; i < stepDefs.length; i++) {
-			const stepDef = stepDefs[i];
-			if (!stepDef) continue;
-			const stepStartTime = performance.now();
-
-			// Check timeout
-			if (timeoutMs && performance.now() - startTime > timeoutMs) {
-				const stepResult: StepResult = {
-					index: i,
-					alias: stepDef.as,
-					command: stepDef.command,
-					status: 'skipped',
-					executionTimeMs: 0,
-					error: {
-						code: 'TIMEOUT',
-						message: `Pipeline timeout (${timeoutMs}ms) exceeded`,
-					},
-				};
-				stepResults.push(stepResult);
-				pipelineFailed = true;
-				break;
-			}
-
-			// Evaluate condition if present
-			if (stepDef.when) {
-				const conditionMet = evaluateCondition(stepDef.when, pipelineContext);
-				if (!conditionMet) {
-					this.debug(`[${traceId}] Step ${i} (${stepDef.command}) skipped: condition not met`);
-					const stepResult: StepResult = {
-						index: i,
-						alias: stepDef.as,
-						command: stepDef.command,
-						status: 'skipped',
-						executionTimeMs: 0,
-					};
-					stepResults.push(stepResult);
-					// Add to context with undefined data so alias is still resolvable
-					pipelineContext.steps.push({
-						index: i,
-						alias: stepDef.as,
-						command: stepDef.command,
-						status: 'skipped',
-						data: undefined,
-						executionTimeMs: 0,
-					});
-					continue;
-				}
-			}
-
-			// If pipeline already failed and we're not continuing on failure, skip
-			if (pipelineFailed && !continueOnFailure) {
-				const stepResult: StepResult = {
-					index: i,
-					alias: stepDef.as,
-					command: stepDef.command,
-					status: 'skipped',
-					executionTimeMs: 0,
-				};
-				stepResults.push(stepResult);
-				continue;
-			}
-
-			// Resolve variables in input
-			const resolvedInput = stepDef.input
-				? (resolveVariables(stepDef.input, pipelineContext) as Record<string, unknown>)
-				: undefined;
-
-			this.debug(`[${traceId}] Step ${i}: ${stepDef.command}`, resolvedInput);
-
-			// Execute the command
-			const result = await this.call<unknown>(stepDef.command, resolvedInput, {
-				...context,
-				traceId: `${traceId}-step-${i}`,
-			});
-
-			const stepExecutionTime = performance.now() - stepStartTime;
-
-			if (result.success) {
-				const stepResult: StepResult = {
-					index: i,
-					alias: stepDef.as,
-					command: stepDef.command,
-					status: 'success',
-					data: result.data,
-					executionTimeMs: stepExecutionTime,
-					metadata: this.extractResultMetadata(result),
-				};
-				stepResults.push(stepResult);
-
-				// Update context
-				pipelineContext.steps.push(stepResult);
-				pipelineContext.previousResult = stepResult;
-				finalData = result.data;
-			} else {
-				const stepResult: StepResult = {
-					index: i,
-					alias: stepDef.as,
-					command: stepDef.command,
-					status: 'failure',
-					error: result.error,
-					executionTimeMs: stepExecutionTime,
-				};
-				stepResults.push(stepResult);
-				pipelineContext.steps.push(stepResult);
-				pipelineFailed = true;
-
-				if (!continueOnFailure) {
-					this.debug(`[${traceId}] Pipeline failed at step ${i}: ${result.error?.message}`);
-					// Mark remaining steps as skipped
-					for (let j = i + 1; j < stepDefs.length; j++) {
-						const skippedDef = stepDefs[j];
-						if (!skippedDef) continue;
-						stepResults.push({
-							index: j,
-							alias: skippedDef.as,
-							command: skippedDef.command,
-							status: 'skipped',
-							executionTimeMs: 0,
-						});
-					}
-					break;
-				}
-			}
-		}
-
-		const totalExecutionTime = performance.now() - startTime;
-
-		// Build aggregated metadata
-		const metadata = this.buildPipelineMetadata(stepResults, stepDefs, totalExecutionTime);
-
-		this.debug(`[${traceId}] Pipeline completed in ${totalExecutionTime.toFixed(3)}ms`, {
-			completedSteps: metadata.completedSteps,
-			totalSteps: metadata.totalSteps,
-			success: !pipelineFailed,
-		});
-
-		return {
-			data: finalData as T,
-			metadata,
-			steps: stepResults,
-		};
-	}
-
-	/**
-	 * Extract metadata from a command result.
-	 */
-	private extractResultMetadata(result: CommandResult<unknown>): ResultMetadata {
-		return {
-			confidence: result.confidence,
-			reasoning: result.reasoning,
-			warnings: result.warnings,
-			sources: result.sources,
-			alternatives: result.alternatives,
-			executionTimeMs: result.metadata?.executionTimeMs,
-		};
-	}
-
-	/**
-	 * Build aggregated pipeline metadata from step results.
-	 */
-	private buildPipelineMetadata(
-		steps: StepResult[],
-		stepDefs: PipelineStep[],
-		totalExecutionTime: number
-	): PipelineMetadata {
-		const completedSteps = steps.filter((s) => s.status === 'success').length;
-		const totalSteps = steps.length;
-
-		return {
-			confidence: aggregatePipelineConfidence(steps),
-			confidenceBreakdown: buildConfidenceBreakdown(steps, stepDefs),
-			reasoning: aggregatePipelineReasoning(steps),
-			warnings: aggregatePipelineWarnings(steps),
-			sources: aggregatePipelineSources(steps),
-			alternatives: aggregatePipelineAlternatives(steps),
-			executionTimeMs: totalExecutionTime,
-			completedSteps,
-			totalSteps,
-		};
+		this.debug(`[${traceId}] Starting pipeline`);
+		let stepIndex = 0;
+		return executePipeline(
+			pipelineRequest,
+			(command, input, commandContext) =>
+				this.call(command, input as Record<string, unknown>, {
+					...context,
+					...commandContext,
+					traceId: `${traceId}-step-${stepIndex++}`,
+				}) as Promise<CommandResult>,
+			{ ...context, traceId }
+		) as Promise<PipelineResult<T>>;
 	}
 
 	/**

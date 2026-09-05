@@ -8,6 +8,45 @@ import type {
 } from './types.js';
 
 /**
+ * Take a snapshot that is independent from a handler's mutable state.
+ * structuredClone preserves nested values and cyclic objects where supported;
+ * the fallback keeps the registry usable for legacy states containing values
+ * that structuredClone cannot copy (for example, functions).
+ */
+function cloneState<T>(state: T): T {
+	try {
+		return structuredClone(state);
+	} catch {
+		return cloneRecord(state, new WeakMap<object, unknown>());
+	}
+}
+
+function cloneRecord<T>(value: T, seen: WeakMap<object, unknown>): T {
+	if (value === null || typeof value !== 'object') return value;
+
+	const objectValue = value as object;
+	const existing = seen.get(objectValue);
+	if (existing !== undefined) return existing as T;
+
+	if (value instanceof Date) {
+		return new Date(value.getTime()) as T;
+	}
+	if (Array.isArray(value)) {
+		const copy: unknown[] = [];
+		seen.set(objectValue, copy);
+		for (const item of value) copy.push(cloneRecord(item, seen));
+		return copy as T;
+	}
+
+	const copy: Record<string, unknown> = {};
+	seen.set(objectValue, copy);
+	for (const [key, item] of Object.entries(value)) {
+		copy[key] = cloneRecord(item, seen);
+	}
+	return copy as T;
+}
+
+/**
  * Central registry for UI view state handlers.
  *
  * Components register get/set handlers by ID. The registry coordinates
@@ -58,19 +97,45 @@ export class ViewStateRegistry {
 	get(id: string): Record<string, unknown> | null {
 		const handler = this.handlers.get(id);
 		if (!handler) return null;
-		return handler.get();
+		return cloneState(handler.get());
 	}
 
-	/** Apply partial state. Returns previous state for undo. Throws if not registered. */
+	/** Check whether a handler can replace its complete state. */
+	supportsReplace(id: string): boolean {
+		return typeof this.handlers.get(id)?.replace === 'function';
+	}
+
+	/** Apply partial state. Returns a detached previous state snapshot. */
 	set(id: string, partial: Partial<Record<string, unknown>>): Record<string, unknown> {
 		const handler = this.handlers.get(id);
 		if (!handler) {
 			throw new Error(`View state "${id}" is not registered`);
 		}
-		const previous = handler.get();
-		handler.set(partial);
+		const previous = cloneState(handler.get());
+		handler.set(cloneState(partial));
 		if (this.persistence) {
-			this.persistence.schedule(id, handler.get());
+			this.persistence.schedule(id, cloneState(handler.get()));
+		}
+		return previous;
+	}
+
+	/**
+	 * Replace complete state. Throws when the registered handler only supports
+	 * the legacy partial merge operation.
+	 */
+	replace(id: string, state: Record<string, unknown>): Record<string, unknown> {
+		const handler = this.handlers.get(id);
+		if (!handler) {
+			throw new Error(`View state "${id}" is not registered`);
+		}
+		if (!handler.replace) {
+			throw new Error(`View state "${id}" does not support complete replacement`);
+		}
+
+		const previous = cloneState(handler.get());
+		handler.replace(cloneState(state));
+		if (this.persistence) {
+			this.persistence.schedule(id, cloneState(handler.get()));
 		}
 		return previous;
 	}
@@ -79,7 +144,7 @@ export class ViewStateRegistry {
 	list(): ViewStateEntry[] {
 		return [...this.handlers.entries()].map(([id, handler]) => ({
 			id,
-			state: handler.get(),
+			state: cloneState(handler.get()),
 		}));
 	}
 
@@ -94,7 +159,7 @@ export class ViewStateRegistry {
 			for (const record of result.data) {
 				const handler = this.handlers.get(record.id);
 				if (handler && record.value) {
-					handler.set(record.value);
+					handler.set(cloneState(record.value));
 				}
 			}
 		} catch (err) {

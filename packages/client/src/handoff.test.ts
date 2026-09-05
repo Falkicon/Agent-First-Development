@@ -181,6 +181,7 @@ describe('Protocol Handler Registry', () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		clearProtocolHandlers();
 	});
 
@@ -353,6 +354,7 @@ describe('createReconnectingHandoff', () => {
 	});
 
 	afterEach(() => {
+		vi.useRealTimers();
 		clearProtocolHandlers();
 	});
 
@@ -425,6 +427,105 @@ describe('createReconnectingHandoff', () => {
 		expect(() => connection.send({ test: true })).toThrow(
 			'Cannot send: connection not in connected state'
 		);
+	});
+
+	it('retries failed reconnections until one succeeds', async () => {
+		vi.useFakeTimers();
+		let connectAttempts = 0;
+		let disconnect: (() => void) | undefined;
+		const onReconnect = vi.fn();
+		registerProtocolHandler('websocket', async (nextHandoff, connectionOptions) => {
+			connectAttempts++;
+			if (connectAttempts === 2 || connectAttempts === 3) throw new Error('Connection failed');
+			connectionOptions.onConnect?.(nextHandoff);
+			disconnect = () => connectionOptions.onDisconnect?.(1006, 'lost');
+			return {
+				send: vi.fn(),
+				close: vi.fn(),
+				state: 'connected',
+				protocol: nextHandoff.protocol,
+				endpoint: nextHandoff.endpoint,
+			};
+		});
+		const connection = await createReconnectingHandoff(client, createMockHandoff(), {
+			maxAttempts: 3,
+			backoffMs: 1,
+			onReconnect,
+		});
+
+		disconnect?.();
+		await vi.runAllTimersAsync();
+
+		expect(connectAttempts).toBe(4);
+		expect(onReconnect.mock.calls.map(([attempt]) => attempt)).toEqual([1, 2, 3]);
+		expect(connection.state).toBe('connected');
+		expect(connection.isReconnecting).toBe(false);
+		vi.useRealTimers();
+	});
+
+	it('exhausts the configured reconnect attempts exactly once', async () => {
+		vi.useFakeTimers();
+		let connectAttempts = 0;
+		let disconnect: (() => void) | undefined;
+		const onReconnectFailed = vi.fn();
+		registerProtocolHandler('websocket', async (nextHandoff, connectionOptions) => {
+			connectAttempts++;
+			if (connectAttempts > 1) throw new Error('Connection failed');
+			connectionOptions.onConnect?.(nextHandoff);
+			disconnect = () => connectionOptions.onDisconnect?.(1006, 'lost');
+			return {
+				send: vi.fn(),
+				close: vi.fn(),
+				state: 'connected',
+				protocol: nextHandoff.protocol,
+				endpoint: nextHandoff.endpoint,
+			};
+		});
+		const connection = await createReconnectingHandoff(client, createMockHandoff(), {
+			maxAttempts: 3,
+			backoffMs: 1,
+			onReconnectFailed,
+		});
+
+		disconnect?.();
+		await vi.runAllTimersAsync();
+
+		expect(connectAttempts).toBe(4);
+		expect(onReconnectFailed).toHaveBeenCalledOnce();
+		expect(connection.state).toBe('failed');
+		expect(connection.isReconnecting).toBe(false);
+		vi.useRealTimers();
+	});
+
+	it('cancels reconnect backoff when closed', async () => {
+		vi.useFakeTimers();
+		let connectAttempts = 0;
+		let disconnect: (() => void) | undefined;
+		registerProtocolHandler('websocket', async (nextHandoff, connectionOptions) => {
+			connectAttempts++;
+			connectionOptions.onConnect?.(nextHandoff);
+			disconnect = () => connectionOptions.onDisconnect?.(1006, 'lost');
+			return {
+				send: vi.fn(),
+				close: vi.fn(),
+				state: 'connected',
+				protocol: nextHandoff.protocol,
+				endpoint: nextHandoff.endpoint,
+			};
+		});
+		const connection = await createReconnectingHandoff(client, createMockHandoff(), {
+			maxAttempts: 3,
+			backoffMs: 100,
+		});
+
+		disconnect?.();
+		connection.close();
+		await vi.runAllTimersAsync();
+
+		expect(connectAttempts).toBe(1);
+		expect(connection.state).toBe('disconnected');
+		expect(connection.isReconnecting).toBe(false);
+		vi.useRealTimers();
 	});
 });
 

@@ -24,6 +24,7 @@ interface DisconnectResult {
 export const chatDisconnect = defineCommand<typeof inputSchema, DisconnectResult>({
 	name: 'chat-disconnect',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'End a chat session',
 	tags: ['chat', 'write', 'safe'],
 	mutation: true,

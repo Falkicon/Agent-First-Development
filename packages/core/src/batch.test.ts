@@ -136,6 +136,36 @@ describe('createBatchResult', () => {
 		expect(result.reasoning).toContain('1 failed');
 	});
 
+	it('counts skipped commands separately and completes when every command fails', () => {
+		const results: BatchCommandResult[] = [
+			createMockCommandResult('cmd-0', 0, 'todo.create', false),
+			{
+				id: 'cmd-1',
+				index: 1,
+				command: 'todo.list',
+				durationMs: 0,
+				result: {
+					success: false,
+					error: { code: 'COMMAND_SKIPPED', message: 'Skipped after failure' },
+				},
+			},
+		];
+		const result = createBatchResult(results, {
+			totalMs: 10,
+			averageMs: 5,
+			startedAt: '2024-01-01T00:00:00.000Z',
+			completedAt: '2024-01-01T00:00:00.010Z',
+		});
+
+		expect(result.success).toBe(true);
+		expect(result.summary).toEqual({
+			total: 2,
+			successCount: 0,
+			failureCount: 1,
+			skippedCount: 1,
+		});
+	});
+
 	it('collects warnings from all commands', () => {
 		const results: BatchCommandResult[] = [
 			{

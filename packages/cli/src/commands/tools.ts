@@ -2,43 +2,10 @@
  * @fileoverview Tools command
  */
 
-import { createClient } from '@lushly-dev/afd-client';
 import type { Command } from 'commander';
 import ora from 'ora';
-import { getConfig } from '../config.js';
+import { ensureConnected } from '../connection.js';
 import { type OutputFormat, printError, printTools } from '../output.js';
-import { getClient, setClient } from './connect.js';
-
-/**
- * Ensure we have a connected client, auto-connecting if needed.
- */
-async function ensureConnected() {
-	let client = getClient();
-
-	if (client?.isConnected()) {
-		return client;
-	}
-
-	// Try to auto-connect using saved URL
-	const config = getConfig();
-	if (!config.serverUrl) {
-		return null;
-	}
-
-	client = createClient({
-		url: config.serverUrl,
-		transport: 'http', // Use HTTP for CLI (more reliable)
-		timeout: config.timeout ?? 30000,
-	});
-
-	try {
-		await client.connect();
-		setClient(client);
-		return client;
-	} catch {
-		return null;
-	}
-}
 
 /**
  * Register the tools command.

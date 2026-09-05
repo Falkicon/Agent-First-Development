@@ -11,13 +11,13 @@ import { EventSource } from 'eventsource';
  */
 export interface Transport {
 	/** Connect to the server */
-	connect(): Promise<void>;
+	connect(signal?: AbortSignal): Promise<void>;
 
 	/** Disconnect from the server */
 	disconnect(): void;
 
 	/** Send a request and wait for response */
-	send(request: McpRequest): Promise<McpResponse>;
+	send(request: McpRequest, signal?: AbortSignal): Promise<McpResponse>;
 
 	/** Check if connected */
 	isConnected(): boolean;
@@ -46,6 +46,7 @@ export class SseTransport implements Transport {
 	private closeHandler: (() => void) | null = null;
 	private connected = false;
 	private messageEndpoint: string;
+	private activeControllers = new Set<AbortController>();
 
 	constructor(
 		private readonly sseUrl: string,
@@ -58,17 +59,41 @@ export class SseTransport implements Transport {
 		this.messageEndpoint = url.toString();
 	}
 
-	async connect(): Promise<void> {
+	async connect(signal?: AbortSignal): Promise<void> {
+		signal?.throwIfAborted();
+		this.disconnect();
 		return new Promise((resolve, reject) => {
+			const { controller, signal: requestSignal } = this.createRequestController(signal);
+			let settled = false;
+			const cleanup = () => {
+				settled = true;
+				requestSignal.removeEventListener('abort', handleAbort);
+				this.activeControllers.delete(controller);
+			};
+			const handleAbort = () => {
+				this.eventSource?.close();
+				this.eventSource = null;
+				this.connected = false;
+				if (!settled) {
+					cleanup();
+					reject(requestSignal.reason ?? new Error('Connection aborted'));
+				}
+			};
+			requestSignal.addEventListener('abort', handleAbort, { once: true });
 			try {
 				const headers = this.headers;
-				this.eventSource = new EventSource(
+				const eventSource = new EventSource(
 					this.sseUrl,
 					headers
 						? {
 								fetch: (input, init) =>
 									fetch(input, {
 										...init,
+										signal: AbortSignal.any(
+											[init?.signal, requestSignal].filter(
+												(value): value is AbortSignal => value !== undefined && value !== null
+											)
+										),
 										headers: {
 											...Object.fromEntries(new Headers(init?.headers).entries()),
 											...headers,
@@ -78,12 +103,16 @@ export class SseTransport implements Transport {
 						: {}
 				);
 
-				this.eventSource.onopen = () => {
+				this.eventSource = eventSource;
+				eventSource.onopen = () => {
+					if (this.eventSource !== eventSource) return;
 					this.connected = true;
+					cleanup();
 					resolve();
 				};
 
-				this.eventSource.onmessage = (event) => {
+				eventSource.onmessage = (event) => {
+					if (this.eventSource !== eventSource) return;
 					try {
 						const data = JSON.parse(event.data);
 						if (isMcpResponse(data) && this.messageHandler) {
@@ -96,7 +125,10 @@ export class SseTransport implements Transport {
 					}
 				};
 
-				this.eventSource.onerror = (_event) => {
+				eventSource.onerror = (_event) => {
+					if (this.eventSource !== eventSource) return;
+					eventSource.close();
+					this.eventSource = null;
 					const error = new Error('SSE connection error');
 					if (this.connected) {
 						// Connection was established but lost
@@ -106,6 +138,7 @@ export class SseTransport implements Transport {
 						}
 					} else {
 						// Failed to connect initially
+						cleanup();
 						reject(error);
 					}
 					if (this.errorHandler) {
@@ -113,12 +146,17 @@ export class SseTransport implements Transport {
 					}
 				};
 			} catch (error) {
+				cleanup();
 				reject(error instanceof Error ? error : new Error(String(error)));
 			}
 		});
 	}
 
 	disconnect(): void {
+		for (const controller of this.activeControllers) {
+			controller.abort(new Error('Transport disconnected'));
+		}
+		this.activeControllers.clear();
 		if (this.eventSource) {
 			this.eventSource.close();
 			this.eventSource = null;
@@ -126,27 +164,33 @@ export class SseTransport implements Transport {
 		this.connected = false;
 	}
 
-	async send(request: McpRequest): Promise<McpResponse> {
-		const response = await fetch(this.messageEndpoint, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				...this.headers,
-			},
-			body: JSON.stringify(request),
-		});
+	async send(request: McpRequest, signal?: AbortSignal): Promise<McpResponse> {
+		const { controller, signal: requestSignal } = this.createRequestController(signal);
+		try {
+			const response = await fetch(this.messageEndpoint, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...this.headers,
+				},
+				body: JSON.stringify(request),
+				signal: requestSignal,
+			});
 
-		if (!response.ok) {
-			throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+			if (!response.ok) {
+				throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+			}
+
+			const data = await response.json();
+
+			if (!isMcpResponse(data)) {
+				throw new Error('Invalid MCP response received');
+			}
+
+			return data;
+		} finally {
+			this.activeControllers.delete(controller);
 		}
-
-		const data = await response.json();
-
-		if (!isMcpResponse(data)) {
-			throw new Error('Invalid MCP response received');
-		}
-
-		return data;
 	}
 
 	isConnected(): boolean {
@@ -164,6 +208,18 @@ export class SseTransport implements Transport {
 	onClose(handler: () => void): void {
 		this.closeHandler = handler;
 	}
+
+	private createRequestController(signal?: AbortSignal): {
+		controller: AbortController;
+		signal: AbortSignal;
+	} {
+		const controller = new AbortController();
+		this.activeControllers.add(controller);
+		return {
+			controller,
+			signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+		};
+	}
 }
 
 /**
@@ -174,6 +230,7 @@ export class HttpTransport implements Transport {
 	private closeHandler: (() => void) | null = null;
 	private connected = false;
 	private messageUrl: string;
+	private activeControllers = new Set<AbortController>();
 
 	constructor(
 		readonly url: string,
@@ -189,21 +246,26 @@ export class HttpTransport implements Transport {
 		}
 	}
 
-	async connect(): Promise<void> {
+	async connect(signal?: AbortSignal): Promise<void> {
+		const { controller, signal: requestSignal } = this.createRequestController(signal);
 		// For HTTP, verify the endpoint is reachable via health check
 		try {
 			const healthUrl = this.messageUrl.replace(/\/message$/, '/health');
 			const response = await fetch(healthUrl, {
 				method: 'GET',
 				headers: this.headers,
+				signal: requestSignal,
 			});
 
 			if (response.ok) {
 				this.connected = true;
 				return;
 			}
-		} catch {
+		} catch (error) {
+			if (requestSignal.aborted) throw error;
 			// Health check failed, try to continue anyway
+		} finally {
+			this.activeControllers.delete(controller);
 		}
 
 		// Fallback: just mark as connected and let first request fail if not reachable
@@ -211,38 +273,48 @@ export class HttpTransport implements Transport {
 	}
 
 	disconnect(): void {
+		for (const controller of this.activeControllers) {
+			controller.abort(new Error('Transport disconnected'));
+		}
+		this.activeControllers.clear();
 		this.connected = false;
 		if (this.closeHandler) {
 			this.closeHandler();
 		}
 	}
 
-	async send(request: McpRequest): Promise<McpResponse> {
-		const response = await fetch(this.messageUrl, {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				...this.headers,
-			},
-			body: JSON.stringify(request),
-		});
+	async send(request: McpRequest, signal?: AbortSignal): Promise<McpResponse> {
+		const { controller, signal: requestSignal } = this.createRequestController(signal);
+		try {
+			const response = await fetch(this.messageUrl, {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					...this.headers,
+				},
+				body: JSON.stringify(request),
+				signal: requestSignal,
+			});
 
-		if (!response.ok) {
-			throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+			if (!response.ok) {
+				throw new Error(`HTTP error: ${response.status} ${response.statusText}`);
+			}
+
+			const data = await response.json();
+
+			if (!isMcpResponse(data)) {
+				throw new Error('Invalid MCP response received');
+			}
+
+			// For HTTP transport, also dispatch through message handler
+			if (this.messageHandler) {
+				this.messageHandler(data);
+			}
+
+			return data;
+		} finally {
+			this.activeControllers.delete(controller);
 		}
-
-		const data = await response.json();
-
-		if (!isMcpResponse(data)) {
-			throw new Error('Invalid MCP response received');
-		}
-
-		// For HTTP transport, also dispatch through message handler
-		if (this.messageHandler) {
-			this.messageHandler(data);
-		}
-
-		return data;
 	}
 
 	isConnected(): boolean {
@@ -259,6 +331,18 @@ export class HttpTransport implements Transport {
 
 	onClose(handler: () => void): void {
 		this.closeHandler = handler;
+	}
+
+	private createRequestController(signal?: AbortSignal): {
+		controller: AbortController;
+		signal: AbortSignal;
+	} {
+		const controller = new AbortController();
+		this.activeControllers.add(controller);
+		return {
+			controller,
+			signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
+		};
 	}
 }
 

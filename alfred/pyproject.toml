@@ -32,18 +32,16 @@ classifiers = [
 dependencies = [
     "lushly-botcore>=0.2.0",
     "afd>=0.2.0",
+    "click>=8.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
 mcp = [
     "lushly-botcore[mcp]",
 ]
-cli = [
-    "click>=8.0",
-    "rich>=13.0",
-]
 dev = [
-    "alfred[mcp,cli]",
+    "alfred[mcp]",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "ruff>=0.1.0",

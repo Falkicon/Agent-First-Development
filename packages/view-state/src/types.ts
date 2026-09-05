@@ -3,6 +3,11 @@ import type { DataAdapter } from '@lushly-dev/local-db';
 export interface ViewStateHandler<T extends Record<string, unknown> = Record<string, unknown>> {
 	get: () => T;
 	set: (partial: Partial<T>) => void;
+	/**
+	 * Replace the complete state. When provided, view-state commands can
+	 * restore snapshots exactly, including removing keys added by a mutation.
+	 */
+	replace?: (state: T) => void;
 }
 
 export interface ViewStateEntry {

@@ -127,8 +127,7 @@ export interface McpClientEvents {
  * Pending request tracking.
  */
 export interface PendingRequest {
-	resolve: (value: unknown) => void;
-	reject: (error: Error) => void;
+	controller: AbortController;
 	timeout: ReturnType<typeof setTimeout>;
 	method: string;
 }

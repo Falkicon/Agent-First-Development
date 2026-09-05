@@ -2,43 +2,10 @@
  * @fileoverview Call command
  */
 
-import { createClient } from '@lushly-dev/afd-client';
 import type { Command } from 'commander';
 import ora from 'ora';
-import { getConfig } from '../config.js';
+import { ensureConnected } from '../connection.js';
 import { type OutputFormat, printError, printResult } from '../output.js';
-import { getClient, setClient } from './connect.js';
-
-/**
- * Ensure we have a connected client, auto-connecting if needed.
- */
-async function ensureConnected() {
-	let client = getClient();
-
-	if (client?.isConnected()) {
-		return client;
-	}
-
-	// Try to auto-connect using saved URL
-	const config = getConfig();
-	if (!config.serverUrl) {
-		return null;
-	}
-
-	client = createClient({
-		url: config.serverUrl,
-		transport: 'http', // Use HTTP for CLI (more reliable)
-		timeout: config.timeout ?? 30000,
-	});
-
-	try {
-		await client.connect();
-		setClient(client);
-		return client;
-	} catch {
-		return null;
-	}
-}
 
 /**
  * Register the call command.
@@ -49,10 +16,17 @@ export function registerCallCommand(program: Command): void {
 		.description('Call a tool/command')
 		.argument('<name>', 'Tool name (e.g., document.create)')
 		.argument('[args]', 'JSON arguments or key=value pairs')
+		.option('--connect <url>', 'Use an MCP server URL for this call without changing saved config')
+		.option('--transport <type>', 'Transport type for --connect (sse, http; default: http)')
+		.option('--timeout <ms>', 'Connection timeout in milliseconds')
 		.option('-f, --format <format>', 'Output format (json, text)', 'text')
 		.option('-v, --verbose', 'Show detailed output including reasoning and sources')
 		.action(async (name: string, args: string | undefined, options) => {
-			const client = await ensureConnected();
+			const client = await ensureConnected({
+				url: options.connect,
+				transport: options.transport as 'sse' | 'http',
+				timeout: options.timeout ? Number.parseInt(options.timeout, 10) : undefined,
+			});
 
 			if (!client) {
 				printError('Not connected. Run "afd connect <url>" first.');

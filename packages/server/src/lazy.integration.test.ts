@@ -8,6 +8,7 @@ import { getToolsList } from './tools.js';
 function createTestCommands() {
 	return [
 		defineCommand({
+			expose: { mcp: true },
 			name: 'todo-create',
 			description: 'Creates a new todo item',
 			category: 'todo',
@@ -19,6 +20,7 @@ function createTestCommands() {
 			}),
 		}),
 		defineCommand({
+			expose: { mcp: true },
 			name: 'todo-list',
 			description: 'Lists all todo items',
 			category: 'todo',
@@ -27,6 +29,7 @@ function createTestCommands() {
 			handler: async () => ({ success: true as const, data: [] }),
 		}),
 		defineCommand({
+			expose: { mcp: true },
 			name: 'user-get',
 			description: 'Gets a user by ID',
 			category: 'user',
@@ -105,6 +108,7 @@ describe('afd-discover with context filtering via router', () => {
 		state.enter('todo');
 
 		const cmdA = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-list',
 			description: 'Lists todos',
 			input: z.object({}),
@@ -112,6 +116,7 @@ describe('afd-discover with context filtering via router', () => {
 			handler: async () => ({ success: true as const, data: [] }),
 		});
 		const cmdB = defineCommand({
+			expose: { mcp: true },
 			name: 'admin-reset',
 			description: 'Resets admin state',
 			input: z.object({}),
@@ -119,6 +124,7 @@ describe('afd-discover with context filtering via router', () => {
 			handler: async () => ({ success: true as const, data: null }),
 		});
 		const cmdC = defineCommand({
+			expose: { mcp: true },
 			name: 'app-help',
 			description: 'Shows help',
 			input: z.object({}),

@@ -1,3 +1,5 @@
+// afd-override: max-lines=600
+// Scenario evaluation keeps its schemas, execution, and result contract together for review.
 /**
  * @lushly-dev/afd-testing - scenario-evaluate command
  *

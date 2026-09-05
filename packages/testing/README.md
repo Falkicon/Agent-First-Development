@@ -25,6 +25,25 @@ This package provides utilities for testing AFD commands:
 - **Scenario Commands**: List, evaluate, coverage, create, and suggest scenarios
 - **MCP Agent Integration**: Expose commands as MCP tools with agent hints
 
+### Subprocess Scenario Execution
+
+`ScenarioExecutor` can run each step through the installed `afd` CLI. The
+server URL and transport are passed to each `afd call` without changing the
+developer's saved CLI connection:
+
+```typescript
+import { ScenarioExecutor } from '@lushly-dev/afd-testing';
+
+const executor = new ScenarioExecutor({
+  cliPath: '/path/to/afd',
+  serverUrl: 'http://localhost:3100/mcp',
+  transport: 'http',
+});
+```
+
+The wrapper uses the public CLI contract: positional JSON input plus
+`--format json`. Malformed CLI output is reported as a scenario parse error.
+
 ## Surface Validation (Semantic Quality)
 
 Cross-command analysis that detects semantic collisions, naming ambiguities, schema overlaps, and prompt injection risks. Designed for command sets of 50+ where agents struggle to pick the right tool.

@@ -348,6 +348,7 @@ function createEventSourceSse(
 				);
 			},
 			close() {
+				if (state === 'disconnected' || state === 'failed') return;
 				eventSource.close();
 				setState('disconnected');
 				options.onDisconnect?.();
@@ -355,12 +356,14 @@ function createEventSourceSse(
 		};
 
 		eventSource.onopen = () => {
+			if (state !== 'connecting') return;
 			setState('connected');
 			options.onConnect?.(eventSource);
 			resolveOnce(connection);
 		};
 
 		eventSource.onmessage = (event) => {
+			if (state !== 'connected') return;
 			try {
 				options.onMessage?.(JSON.parse(event.data));
 			} catch {
@@ -369,12 +372,13 @@ function createEventSourceSse(
 		};
 
 		eventSource.onerror = () => {
+			if (state === 'disconnected' || state === 'failed') return;
+			eventSource.close();
 			const error = new Error('SSE connection error');
 			options.onError?.(error);
 
 			if (state === 'connecting') {
 				setState('failed');
-				eventSource.close();
 				rejectOnce(error);
 			} else {
 				setState('disconnected');

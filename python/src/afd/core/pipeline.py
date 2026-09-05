@@ -18,6 +18,7 @@ Example:
     ... )
 """
 
+import asyncio
 import re
 import time
 from enum import Enum
@@ -75,13 +76,15 @@ class PipelineOptions(BaseModel):
             False (default): Pipeline stops on first failure
             True: Continue executing, collect all errors
         timeout_ms: Timeout for entire pipeline in milliseconds.
-        parallel: Execute steps in parallel where dependencies allow.
-            Steps that don't reference $prev can potentially run in parallel.
+        parallel: Reserved for dependency-aware parallel execution. True is
+            rejected with UNSUPPORTED_OPTION.
     """
 
     continue_on_failure: bool = False
-    timeout_ms: Optional[int] = None
+    timeout_ms: Optional[int] = Field(default=None, ge=0)
     parallel: bool = False
+
+    model_config = {"extra": "forbid"}
 
 
 class PipelineRequest(BaseModel):
@@ -793,6 +796,29 @@ async def execute_pipeline(
     continue_on_failure = options.continue_on_failure if options else False
     total_start_time = time.perf_counter()
 
+    if options and options.parallel and request.steps:
+        unsupported = CommandError(
+            code="UNSUPPORTED_OPTION",
+            message="Parallel pipeline execution is not supported",
+            suggestion="Remove parallel or set it to false to execute steps sequentially",
+        )
+        for i, step in enumerate(request.steps):
+            step_results.append(
+                StepResult(
+                    index=i,
+                    alias=step.as_,
+                    command=step.command,
+                    status=StepStatus.FAILURE if i == 0 else StepStatus.SKIPPED,
+                    error=unsupported if i == 0 else None,
+                    execution_time_ms=0,
+                )
+            )
+        return PipelineResult(
+            data=None,
+            metadata=build_pipeline_metadata(step_results, request.steps, 0),
+            steps=step_results,
+        )
+
     for i, step in enumerate(request.steps):
         step_start_time = time.perf_counter()
 
@@ -817,7 +843,55 @@ async def execute_pipeline(
         )
 
         # Execute the command
-        result = await executor(step.command, resolved_input)
+        try:
+            if options and options.timeout_ms is not None:
+                elapsed_ms = (time.perf_counter() - total_start_time) * 1000
+                remaining_s = (options.timeout_ms - elapsed_ms) / 1000
+                if remaining_s <= 0:
+                    raise asyncio.TimeoutError
+                result = await asyncio.wait_for(
+                    executor(step.command, resolved_input), timeout=remaining_s
+                )
+            else:
+                result = await executor(step.command, resolved_input)
+        except asyncio.TimeoutError:
+            timeout_error = CommandError(
+                code="PIPELINE_TIMEOUT",
+                message=f"Pipeline timeout exceeded ({options.timeout_ms}ms)",
+                suggestion="Increase timeout_ms or reduce the number of pipeline steps",
+                retryable=True,
+            )
+            step_results.append(
+                StepResult(
+                    index=i,
+                    alias=step.as_,
+                    command=step.command,
+                    status=StepStatus.FAILURE,
+                    error=timeout_error,
+                    execution_time_ms=(time.perf_counter() - step_start_time) * 1000,
+                )
+            )
+            for j, remaining_step in enumerate(request.steps[i + 1 :], i + 1):
+                step_results.append(
+                    StepResult(
+                        index=j,
+                        alias=remaining_step.as_,
+                        command=remaining_step.command,
+                        status=StepStatus.SKIPPED,
+                        error=timeout_error,
+                        execution_time_ms=0,
+                    )
+                )
+            break
+        except Exception as exc:
+            result = CommandResult(
+                success=False,
+                error=CommandError(
+                    code="COMMAND_EXECUTION_ERROR",
+                    message=str(exc),
+                    suggestion="Check the command implementation and retry",
+                ),
+            )
 
         step_end_time = time.perf_counter()
         execution_time_ms = (step_end_time - step_start_time) * 1000

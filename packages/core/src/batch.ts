@@ -342,8 +342,8 @@ export function createBatchResult<T = unknown>(
 	metadata?: ResultMetadata
 ): BatchResult<T> {
 	const successCount = results.filter((r) => r.result.success).length;
-	const failureCount = results.filter((r) => !r.result.success).length;
-	const skippedCount = results.length - successCount - failureCount;
+	const skippedCount = results.filter((r) => r.result.error?.code === 'COMMAND_SKIPPED').length;
+	const failureCount = results.length - successCount - skippedCount;
 
 	const summary: BatchSummary = {
 		total: results.length,
@@ -450,14 +450,7 @@ function generateBatchReasoning(summary: BatchSummary): string {
 /**
  * Type guard to check if a value is a BatchRequest.
  */
-export function isBatchRequest(value: unknown): value is BatchRequest {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		'commands' in value &&
-		Array.isArray((value as BatchRequest).commands)
-	);
-}
+export { isBatchRequest } from './request-validation.js';
 
 /**
  * Type guard to check if a value is a BatchResult.
@@ -477,11 +470,4 @@ export function isBatchResult(value: unknown): value is BatchResult {
 /**
  * Type guard to check if a value is a BatchCommand.
  */
-export function isBatchCommand(value: unknown): value is BatchCommand {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		'command' in value &&
-		typeof (value as BatchCommand).command === 'string'
-	);
-}
+export { isBatchCommand } from './request-validation.js';

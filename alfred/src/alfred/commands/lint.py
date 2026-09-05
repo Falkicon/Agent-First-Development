@@ -6,7 +6,7 @@ deterministic lint checks as a CommandResult-returning command.
 
 from pathlib import Path
 
-from afd.core.result import CommandResult, success, error
+from afd.core.result import CommandResult, error, success
 from afd.lushx_ext.linters import AFDLinter
 
 

@@ -16,6 +16,12 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 pub enum McpId {
     /// Numeric request identifier.
     Number(u64),
+    /// Signed numeric request identifier.
+    ///
+    /// This is separate from `Number` to retain source compatibility for
+    /// callers constructing unsigned IDs directly, while still preserving
+    /// negative JSON-RPC IDs on the wire.
+    SignedNumber(i64),
     /// String request identifier.
     String(String),
 }
@@ -34,7 +40,21 @@ impl From<u32> for McpId {
 
 impl From<i32> for McpId {
     fn from(value: i32) -> Self {
-        Self::Number(value.max(0) as u64)
+        if value.is_negative() {
+            Self::SignedNumber(value.into())
+        } else {
+            Self::Number(value as u64)
+        }
+    }
+}
+
+impl From<i64> for McpId {
+    fn from(value: i64) -> Self {
+        if value.is_negative() {
+            Self::SignedNumber(value)
+        } else {
+            Self::Number(value as u64)
+        }
     }
 }
 
@@ -424,6 +444,32 @@ mod tests {
                 data: None,
             })
         );
+    }
+
+    #[test]
+    fn test_signed_mcp_ids_round_trip_without_clamping() {
+        let id = McpId::from(-42i32);
+        assert_eq!(id, McpId::SignedNumber(-42));
+        assert_eq!(serde_json::to_value(&id).unwrap(), serde_json::json!(-42));
+
+        let decoded: McpId = serde_json::from_value(serde_json::json!(-42)).unwrap();
+        assert_eq!(decoded, id);
+
+        let response = create_mcp_response(-7i32, serde_json::json!({"ok": true}));
+        assert_eq!(
+            serde_json::to_value(response.id).unwrap(),
+            serde_json::json!(-7)
+        );
+    }
+
+    #[test]
+    fn test_unsigned_mcp_ids_still_support_full_u64_range() {
+        let id = McpId::from(u64::MAX);
+        let json = serde_json::to_value(&id).unwrap();
+        assert_eq!(json, serde_json::json!(u64::MAX));
+
+        let decoded: McpId = serde_json::from_value(json).unwrap();
+        assert_eq!(decoded, id);
     }
 
     #[test]

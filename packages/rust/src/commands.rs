@@ -4,6 +4,7 @@
 //! is defined as a command with a clear schema.
 
 use async_trait::async_trait;
+use futures_util::{stream::FuturesUnordered, StreamExt};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,6 +16,9 @@ use crate::batch::{BatchCommandResult, BatchRequest, BatchResult, BatchSummary, 
 use crate::errors::CommandError;
 use crate::handoff::HandoffCommandLike;
 use crate::result::CommandResult;
+
+type BatchExecutionFuture<'a> =
+    Pin<Box<dyn Future<Output = (usize, BatchCommandResult<serde_json::Value>)> + Send + 'a>>;
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // COMMAND NAME VALIDATION
@@ -662,22 +666,98 @@ impl CommandRegistry {
         }
 
         let options = request.options;
-        let mut results: Vec<BatchCommandResult<serde_json::Value>> = Vec::new();
-        let mut stopped = false;
+        #[cfg(not(feature = "native"))]
+        if options.timeout_ms.is_some() {
+            return crate::batch::create_failed_batch_result(
+                CommandError {
+                    code: "UNSUPPORTED_OPTION".to_string(),
+                    message: "Batch deadlines require the native feature".to_string(),
+                    suggestion: Some("Enable the native feature or omit timeoutMs".to_string()),
+                    retryable: Some(false),
+                    details: None,
+                    cause: None,
+                },
+                &started_at,
+            );
+        }
+        let concurrency = options.max_concurrency.unwrap_or(1);
+        if concurrency == 0 || options.max_failures == Some(0) {
+            return crate::batch::create_failed_batch_result(
+                CommandError {
+                    code: "INVALID_BATCH_REQUEST".to_string(),
+                    message: "Batch concurrency and maxFailures must be positive".to_string(),
+                    suggestion: Some(
+                        "Set maxConcurrency and maxFailures to values greater than zero"
+                            .to_string(),
+                    ),
+                    retryable: Some(false),
+                    details: None,
+                    cause: None,
+                },
+                &started_at,
+            );
+        }
 
-        for (_i, cmd) in request.commands.into_iter().enumerate() {
-            if stopped {
-                results.push(BatchCommandResult {
-                    id: cmd.id,
-                    command: cmd.command,
-                    result: CommandResult {
+        let total_commands = request.commands.len();
+        let command_metadata: Vec<_> = request
+            .commands
+            .iter()
+            .map(|command| (command.id.clone(), command.command.clone()))
+            .collect();
+        let timeout_ms = options.timeout_ms;
+        let continue_on_error = options.continue_on_error;
+        let max_failures = options.max_failures;
+        let deadline = options
+            .timeout_ms
+            .map(|timeout| start_time + std::time::Duration::from_millis(timeout));
+        let mut pending = request.commands.into_iter().enumerate();
+        let mut active: FuturesUnordered<BatchExecutionFuture<'_>> = FuturesUnordered::new();
+        let mut results: Vec<Option<BatchCommandResult<serde_json::Value>>> =
+            (0..total_commands).map(|_| None).collect();
+        let mut failures = 0usize;
+        let mut stopped = false;
+        let mut timed_out = false;
+
+        loop {
+            while !stopped && active.len() < concurrency {
+                let Some((index, cmd)) = pending.next() else {
+                    break;
+                };
+                let command_name = cmd.command.clone();
+                active.push(Box::pin(async move {
+                    let command_start = std::time::Instant::now();
+                    let execution = self.execute(&command_name, cmd.input, None);
+                    let result = if let Some(deadline) = deadline {
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() {
+                            None
+                        } else {
+                            #[cfg(feature = "native")]
+                            {
+                                tokio::time::timeout(remaining, execution).await.ok()
+                            }
+                            #[cfg(not(feature = "native"))]
+                            {
+                                Some(execution.await)
+                            }
+                        }
+                    } else {
+                        Some(execution.await)
+                    };
+                    let result = result.unwrap_or_else(|| CommandResult {
                         success: false,
                         data: None,
                         error: Some(CommandError {
-                            code: "COMMAND_SKIPPED".to_string(),
-                            message: "Command skipped due to previous error".to_string(),
-                            suggestion: None,
-                            retryable: None,
+                            code: "BATCH_TIMEOUT".to_string(),
+                            message: format!(
+                                "Batch timeout exceeded ({}ms)",
+                                timeout_ms.unwrap_or(0)
+                            ),
+                            suggestion: Some(
+                                "Increase timeoutMs or reduce the number of commands".to_string(),
+                            ),
+                            retryable: Some(true),
                             details: None,
                             cause: None,
                         }),
@@ -688,41 +768,106 @@ impl CommandRegistry {
                         alternatives: None,
                         warnings: None,
                         metadata: None,
-                    },
-                    duration_ms: Some(0),
-                });
+                    });
+                    (
+                        index,
+                        BatchCommandResult {
+                            id: cmd.id,
+                            command: command_name.clone(),
+                            result,
+                            duration_ms: Some(command_start.elapsed().as_millis() as u64),
+                        },
+                    )
+                }));
+            }
+
+            let Some((index, command_result)) = active.next().await else {
+                break;
+            };
+            let is_timeout = command_result
+                .result
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                == Some("BATCH_TIMEOUT");
+            if !command_result.result.success {
+                failures += 1;
+                timed_out |= is_timeout;
+                stopped = timed_out
+                    || !continue_on_error
+                    || max_failures.is_some_and(|maximum| failures >= maximum);
+            }
+            results[index] = Some(command_result);
+        }
+
+        for (index, result) in results.iter_mut().enumerate() {
+            if result.is_some() {
                 continue;
             }
-
-            let cmd_start = std::time::Instant::now();
-            let result = self.execute(&cmd.command, cmd.input, None).await;
-            let duration_ms = cmd_start.elapsed().as_millis() as u64;
-
-            let is_failure = !result.success;
-
-            results.push(BatchCommandResult {
-                id: cmd.id,
-                command: cmd.command,
-                result,
-                duration_ms: Some(duration_ms),
+            let code = if timed_out {
+                "BATCH_TIMEOUT"
+            } else {
+                "COMMAND_SKIPPED"
+            };
+            let (id, command) = &command_metadata[index];
+            *result = Some(BatchCommandResult {
+                id: id.clone(),
+                command: command.clone(),
+                result: CommandResult {
+                    success: false,
+                    data: None,
+                    error: Some(CommandError {
+                        code: code.to_string(),
+                        message: if timed_out {
+                            "Command did not start before the batch deadline".to_string()
+                        } else {
+                            "Command skipped because batch execution stopped after a failure"
+                                .to_string()
+                        },
+                        suggestion: Some(if timed_out {
+                            "Increase timeoutMs or reduce the number of commands".to_string()
+                        } else {
+                            "Enable continueOnError to execute remaining commands".to_string()
+                        }),
+                        retryable: Some(timed_out),
+                        details: None,
+                        cause: None,
+                    }),
+                    confidence: None,
+                    reasoning: None,
+                    sources: None,
+                    plan: None,
+                    alternatives: None,
+                    warnings: None,
+                    metadata: None,
+                },
+                duration_ms: Some(0),
             });
-
-            if is_failure && !options.continue_on_error {
-                stopped = true;
-            }
         }
+        let results: Vec<_> = results.into_iter().flatten().collect();
 
         let total_ms = start_time.elapsed().as_millis() as u64;
         let ended_at = chrono::Utc::now().to_rfc3339();
 
         let total = results.len();
         let succeeded = results.iter().filter(|r| r.result.success).count();
-        let failed = total - succeeded;
+        let skipped = results
+            .iter()
+            .filter(|result| {
+                result
+                    .result
+                    .error
+                    .as_ref()
+                    .map(|error| error.code.as_str())
+                    == Some("COMMAND_SKIPPED")
+            })
+            .count();
+        let failed = total - succeeded - skipped;
 
         BatchResult {
-            success: failed == 0,
+            success: true,
             results,
-            summary: BatchSummary::new(total, succeeded, failed, 0),
+            summary: BatchSummary::new(total, succeeded, failed, skipped),
             timing: BatchTiming {
                 started_at,
                 ended_at: Some(ended_at),
@@ -805,9 +950,35 @@ pub fn create_command_registry() -> CommandRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::result::success;
+    use crate::batch::{BatchCommand, BatchOptions};
+    use crate::result::{failure, success};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct TestHandler;
+
+    struct ControlledHandler {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl CommandHandler for ControlledHandler {
+        async fn execute(
+            &self,
+            input: serde_json::Value,
+            _context: CommandContext,
+        ) -> CommandResult<serde_json::Value> {
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            if input.get("fail") == Some(&serde_json::Value::Bool(true)) {
+                failure(CommandError::new("EXPECTED", "controlled failure"))
+            } else {
+                success(input)
+            }
+        }
+    }
 
     #[async_trait]
     impl CommandHandler for TestHandler {
@@ -842,6 +1013,139 @@ mod tests {
             .await;
 
         assert!(result.success);
+    }
+
+    #[tokio::test]
+    async fn test_batch_bounds_concurrency_and_preserves_order() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(CommandDefinition::new(
+                "work-run",
+                "Runs controlled work",
+                vec![],
+                ControlledHandler {
+                    active,
+                    peak: Arc::clone(&peak),
+                },
+            ))
+            .unwrap();
+        let request = BatchRequest::new(
+            (0..4)
+                .map(|index| {
+                    BatchCommand::new(
+                        format!("request-{index}"),
+                        "work-run",
+                        serde_json::json!({"index": index}),
+                    )
+                })
+                .collect(),
+        )
+        .with_options(BatchOptions {
+            continue_on_error: true,
+            max_concurrency: Some(2),
+            ..Default::default()
+        });
+
+        let result = registry.execute_batch(request).await;
+
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            result
+                .results
+                .iter()
+                .map(|result| result.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["request-0", "request-1", "request-2", "request-3"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_batch_stop_retains_skipped_correlation() {
+        let mut registry = CommandRegistry::new();
+        registry
+            .register(CommandDefinition::new(
+                "work-run",
+                "Runs controlled work",
+                vec![],
+                ControlledHandler {
+                    active: Arc::new(AtomicUsize::new(0)),
+                    peak: Arc::new(AtomicUsize::new(0)),
+                },
+            ))
+            .unwrap();
+        let request = BatchRequest::new(vec![
+            BatchCommand::new("first", "work-run", serde_json::json!({"fail": true})),
+            BatchCommand::new("second", "work-run", serde_json::json!({})),
+        ]);
+
+        let result = registry.execute_batch(request).await;
+
+        assert!(result.success);
+        assert_eq!(result.summary.failed, 1);
+        assert_eq!(result.summary.skipped, 1);
+        assert_eq!(result.results[1].id, "second");
+        assert_eq!(result.results[1].command, "work-run");
+    }
+
+    #[tokio::test]
+    async fn test_batch_honors_deadline_and_max_failures() {
+        let mut registry = CommandRegistry::new();
+        let peak = Arc::new(AtomicUsize::new(0));
+        registry
+            .register(CommandDefinition::new(
+                "work-run",
+                "Runs controlled work",
+                vec![],
+                ControlledHandler {
+                    active: Arc::new(AtomicUsize::new(0)),
+                    peak: Arc::clone(&peak),
+                },
+            ))
+            .unwrap();
+        let timed_out = registry
+            .execute_batch(
+                BatchRequest::new(vec![BatchCommand::new(
+                    "slow",
+                    "work-run",
+                    serde_json::json!({}),
+                )])
+                .with_options(BatchOptions {
+                    timeout_ms: Some(1),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        #[cfg(feature = "native")]
+        assert_eq!(
+            timed_out.results[0].result.error.as_ref().unwrap().code,
+            "BATCH_TIMEOUT"
+        );
+        #[cfg(not(feature = "native"))]
+        {
+            assert_eq!(timed_out.error.as_ref().unwrap().code, "UNSUPPORTED_OPTION");
+            assert!(timed_out.results.is_empty());
+            assert_eq!(peak.load(Ordering::SeqCst), 0);
+        }
+
+        let failure_limited = registry
+            .execute_batch(
+                BatchRequest::new(vec![
+                    BatchCommand::new("one", "work-run", serde_json::json!({"fail": true})),
+                    BatchCommand::new("two", "work-run", serde_json::json!({"fail": true})),
+                    BatchCommand::new("three", "work-run", serde_json::json!({})),
+                ])
+                .with_options(BatchOptions {
+                    continue_on_error: true,
+                    max_failures: Some(2),
+                    ..Default::default()
+                }),
+            )
+            .await;
+        assert_eq!(failure_limited.summary.failed, 2);
+        assert_eq!(failure_limited.summary.skipped, 1);
+        assert_eq!(failure_limited.results[2].id, "three");
     }
 
     #[test]

@@ -64,13 +64,13 @@ alfred/  # Quality bot — lint, parity, quality (see alfred/AGENTS.md)
 | **Pre-push** (lefthook) | `git push` | Full lint, test, typecheck, portability, file-size, orphan-files |
 | **Quality gate** (`pnpm check`) | On-demand / release script | lint → build → typecheck → test:coverage + portability, file-size, orphan-files |
 | **CI** (GitHub Actions) | Push to main / PR | Same as quality gate — safety net for skipped hooks |
-| **Release** (GitHub Actions) | Push to main | Changesets action: opens version PR or publishes to npm |
+| **Release** (GitHub Actions) | Push to main | `pnpm check` → Changesets opens a version PR or publishes to npm |
 
 **Key rules:**
 - Always run `pnpm check` before pushing — catches everything CI would catch
 - Changesets manages versioning — run `pnpm changeset` to describe changes with each PR
 - All `@lushly-dev/*` packages share one version (fixed versioning via `"fixed"` config)
-- Release flow: merge PR with changesets → CI opens "Release" PR → merge it → CI publishes
+- Release flow: merge PR with changesets → the Release workflow opens a release PR → merge it → the workflow runs `pnpm check` and publishes
 - Agent release flow: `pnpm changeset` → commit changeset file → merge to main
 
 ## Skill Index

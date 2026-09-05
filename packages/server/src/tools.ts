@@ -2,6 +2,7 @@
  * @fileoverview MCP tool list generation — individual, grouped, and lazy strategies.
  */
 
+import { isMcpExposed } from '@lushly-dev/afd-core';
 import type { ZodCommandDefinition } from './schema.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -184,7 +185,10 @@ export function getToolsList(
 	const builtInTools = [batchToolSchema, pipeToolSchema, callToolSchema];
 
 	// Filter by active context before strategy-specific generation
-	const filtered = filterByContext(commands, activeContext);
+	const filtered = filterByContext(
+		commands.filter((cmd) => isMcpExposed(cmd)),
+		activeContext
+	);
 
 	// Lazy strategy: meta-tools + built-ins only
 	if (toolStrategy === 'lazy') {
@@ -198,6 +202,7 @@ export function getToolsList(
 			...filtered.map((cmd) => {
 				const { type: _type, ...restSchema } = cmd.jsonSchema;
 				const hasMeta =
+					cmd.category != null ||
 					(cmd.requires && cmd.requires.length > 0) ||
 					cmd.mutation != null ||
 					(cmd.examples && cmd.examples.length > 0) ||
@@ -212,6 +217,7 @@ export function getToolsList(
 					},
 					...(hasMeta && {
 						_meta: {
+							...(cmd.category != null && { category: cmd.category }),
 							...(cmd.requires?.length && { requires: cmd.requires }),
 							...(cmd.mutation != null && { mutation: cmd.mutation }),
 							...(cmd.examples?.length && { examples: cmd.examples }),
@@ -231,7 +237,7 @@ export function getToolsList(
 	const getGroup = groupByFn || defaultGroupFn;
 
 	// Group commands by their group key
-	const groups: Record<string, ZodCommandDefinition[]> = {};
+	const groups: Record<string, ZodCommandDefinition[]> = Object.create(null);
 	for (const cmd of filtered) {
 		const group = getGroup(cmd) || 'general';
 		if (!groups[group]) {

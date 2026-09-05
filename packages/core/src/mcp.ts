@@ -102,6 +102,16 @@ export interface McpTool {
 		properties?: Record<string, unknown>;
 		required?: string[];
 	};
+
+	/** AFD extensions carried through MCP tools/list. */
+	_meta?: {
+		category?: string;
+		requires?: string[];
+		mutation?: boolean;
+		examples?: Array<{ title: string; input: unknown }>;
+		outputSchema?: Record<string, unknown>;
+		contexts?: string[];
+	};
 }
 
 /**

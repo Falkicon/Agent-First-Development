@@ -12,6 +12,9 @@ function createHandler(
 		set: (partial: Partial<Record<string, unknown>>) => {
 			Object.assign(obj.state, partial);
 		},
+		replace: (state: Record<string, unknown>) => {
+			obj.state = { ...state };
+		},
 	};
 	return obj;
 }
@@ -81,6 +84,33 @@ describe('ViewStateRegistry', () => {
 		it('set throws for unknown ID', () => {
 			const reg = new ViewStateRegistry();
 			expect(() => reg.set('unknown', { x: 1 })).toThrow('not registered');
+		});
+
+		it('replace restores complete state and removes added keys', () => {
+			const reg = new ViewStateRegistry();
+			const handler = createHandler({ open: false });
+			reg.register('panel', handler);
+
+			reg.set('panel', { temporary: true, nested: { value: 2 } });
+			const previous = reg.replace('panel', { open: false });
+
+			expect(previous).toEqual({ open: false, temporary: true, nested: { value: 2 } });
+			expect(reg.get('panel')).toEqual({ open: false });
+		});
+
+		it('detaches nested previous snapshots from in-place handler mutations', () => {
+			const reg = new ViewStateRegistry();
+			const state = { nested: { value: 1 } };
+			reg.register('panel', {
+				get: () => state,
+				set: (partial) => {
+					if (partial.nested) state.nested.value = 2;
+				},
+			});
+
+			const previous = reg.set('panel', { nested: { value: 2 } });
+			expect(previous).toEqual({ nested: { value: 1 } });
+			expect(reg.get('panel')).toEqual({ nested: { value: 2 } });
 		});
 	});
 

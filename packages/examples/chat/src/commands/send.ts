@@ -23,6 +23,7 @@ interface SendResult {
 export const chatSend = defineCommand<typeof inputSchema, SendResult>({
 	name: 'chat-send',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'Send a message to a chat room',
 	tags: ['chat', 'write', 'agent-friendly'],
 	mutation: true,

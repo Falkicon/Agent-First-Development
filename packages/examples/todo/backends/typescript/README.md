@@ -61,5 +61,5 @@ TODO_STORE_PATH=/path/to/todos.json pnpm start
 Run conformance tests:
 
 ```bash
-BACKEND_URL=http://localhost:3100 pnpm example:todo:test
+pnpm --dir ../.. test:conformance:ts
 ```

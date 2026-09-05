@@ -41,6 +41,51 @@ describe('HttpAdapter', () => {
 		expect(result).toBeNull();
 	});
 
+	it.each([
+		['release/test', '/api/v1/flags/release%2Ftest'],
+		['a b', '/api/v1/flags/a%20b'],
+		['a?x=1', '/api/v1/flags/a%3Fx%3D1'],
+	])('encodes record ID %s as one path segment', async (id, expectedUrl) => {
+		const fetch = vi.fn(
+			async () =>
+				({
+					ok: true,
+					status: 200,
+					statusText: 'OK',
+					json: async () => ({ id }),
+					text: async () => '',
+				}) as Response
+		);
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await adapter.get('flags', id);
+
+		expect(fetch).toHaveBeenCalledWith(expectedUrl, undefined);
+	});
+
+	it('rejects 404 responses for list instead of returning null', async () => {
+		const fetch = mockFetch({});
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await expect(adapter.list('accounts')).rejects.toThrow('HTTP 404');
+	});
+
+	it('rejects 404 responses for update instead of returning null', async () => {
+		const fetch = mockFetch({});
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await expect(adapter.update('accounts', 'missing', { name: 'Alice' })).rejects.toThrow(
+			'HTTP 404'
+		);
+	});
+
+	it('rejects 404 responses for health instead of returning null', async () => {
+		const fetch = mockFetch({});
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await expect(adapter.health()).rejects.toThrow('HTTP 404');
+	});
+
 	it('list passes query params', async () => {
 		const fetch = mockFetch({
 			'/api/v1/flags': { status: 200, body: { data: [], total: 0 } },
@@ -87,6 +132,64 @@ describe('HttpAdapter', () => {
 		const adapter = new HttpAdapter('/api/v1', { fetch });
 		await adapter.remove('accounts', 'u1');
 		expect(fetch.mock.calls[0]?.[1]?.method).toBe('DELETE');
+	});
+
+	it('encodes a removed record ID as one path segment', async () => {
+		const fetch = mockFetch({ DELETE: { status: 204 } });
+		const adapter = new HttpAdapter('/api/v1/', { fetch });
+
+		await adapter.remove('flags', 'release/test?active=true');
+
+		expect(fetch).toHaveBeenCalledWith(
+			'/api/v1/flags/release%2Ftest%3Factive%3Dtrue',
+			expect.objectContaining({ method: 'DELETE' })
+		);
+	});
+
+	it('omits undefined query values and supports an empty query object', async () => {
+		const fetch = mockFetch({ '/api/v1/items': { status: 200, body: { data: [], total: 0 } } });
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await adapter.list('items', { limit: undefined, type: 'open' });
+		await adapter.list('items', {});
+
+		expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/items?type=open');
+		expect(fetch.mock.calls[1]?.[0]).toBe('/api/v1/items');
+	});
+
+	it('falls back to status text when an error response body cannot be read', async () => {
+		const fetch = vi.fn(
+			async () =>
+				({
+					ok: false,
+					status: 503,
+					statusText: 'Service Unavailable',
+					text: async () => {
+						throw new Error('unreadable');
+					},
+				}) as unknown as Response
+		);
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		await expect(adapter.health()).rejects.toThrow('HTTP 503: Service Unavailable');
+	});
+
+	it('sends batch operations to the batch endpoint', async () => {
+		const fetch = mockFetch({
+			POST: {
+				status: 200,
+				body: { results: [{ status: 204 }], summary: { total: 1, success: 1, failed: 0 } },
+			},
+		});
+		const adapter = new HttpAdapter('/api/v1', { fetch });
+
+		const result = await adapter.batch([{ method: 'DELETE', path: '/items/1' }]);
+
+		expect(result.summary).toEqual({ total: 1, success: 1, failed: 0 });
+		expect(fetch.mock.calls[0]).toEqual([
+			'/api/v1/batch',
+			expect.objectContaining({ method: 'POST' }),
+		]);
 	});
 
 	it('throws on server error', async () => {

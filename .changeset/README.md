@@ -9,8 +9,9 @@ pnpm changeset
 ```
 
 This creates a changeset file describing the change and its semver impact.
-At release time, `pnpm changeset version` consumes all changesets, bumps versions,
-and updates CHANGELOG.md automatically.
+The Release workflow runs `pnpm check` before Changesets can act. At release time,
+`pnpm version-packages` consumes all changesets, bumps versions, and updates
+CHANGELOG.md automatically. Merging that release PR lets the same workflow publish.
 
 All `@lushly-dev/*` packages use **fixed versioning** — they always share the same version number.
 

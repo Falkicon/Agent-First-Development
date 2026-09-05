@@ -5,6 +5,7 @@ import { defineCommand } from './schema.js';
 import { createMcpHandler } from './server.js';
 
 const echoCommand = defineCommand({
+	expose: { mcp: true },
 	name: 'test-echo',
 	description: 'Echo input text',
 	category: 'test',

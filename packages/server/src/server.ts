@@ -6,13 +6,20 @@
  */
 
 import { createServer, type Server as HttpServer } from 'node:http';
+import { isMcpExposed } from '@lushly-dev/afd-core';
 import { Server as McpSdkServer } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { createContextState } from './bootstrap/afd-context.js';
+import { z } from 'zod';
+import {
+	createAfdContextEnterCommand,
+	createAfdContextExitCommand,
+	createAfdContextListCommand,
+	createContextState,
+} from './bootstrap/afd-context.js';
 import { createExecutionEngine } from './execution.js';
 import { createHttpHandler } from './http-handler.js';
-import type { ZodCommandDefinition } from './schema.js';
+import { defineCommand, type ZodCommandDefinition } from './schema.js';
 import type { McpHandler, McpHandlerOptions, McpServer, McpServerOptions } from './server-types.js';
 import { isStdinPiped } from './server-types.js';
 import { createToolRouter } from './tool-router.js';
@@ -53,8 +60,35 @@ function createSharedHttpRuntime(options: McpHandlerOptions) {
 
 	const contextState = contexts?.length ? createContextState() : undefined;
 
+	const registeredCommands = [...commands];
+	if (contextState && contexts) {
+		const getContexts = () => [...contexts];
+		const builtins = [
+			defineCommand({
+				...createAfdContextListCommand(getContexts, contextState),
+				input: z.object({}),
+				expose: { mcp: true },
+			}),
+			defineCommand({
+				...createAfdContextEnterCommand(getContexts, contextState),
+				input: z.object({ context: z.string().min(1) }),
+				expose: { mcp: true },
+			}),
+			defineCommand({
+				...createAfdContextExitCommand(contextState),
+				input: z.object({}),
+				expose: { mcp: true },
+			}),
+		];
+		for (const command of builtins) {
+			if (registeredCommands.some((existing) => existing.name === command.name)) {
+				throw new Error(`Reserved context command name: ${command.name}`);
+			}
+			registeredCommands.push(command);
+		}
+	}
 	const commandMap = new Map<string, ZodCommandDefinition>();
-	for (const cmd of commands) {
+	for (const cmd of registeredCommands) {
 		commandMap.set(cmd.name, cmd);
 	}
 
@@ -66,36 +100,48 @@ function createSharedHttpRuntime(options: McpHandlerOptions) {
 		onError,
 	});
 
-	const exposedCommandNames = new Set(commands.map((c) => c.name));
+	const remoteCommands = registeredCommands.filter((command) => isMcpExposed(command));
+	const remoteEngine = createExecutionEngine({
+		commandMap: new Map(remoteCommands.map((command) => [command.name, command])),
+		middleware,
+		devMode,
+		onCommand,
+		onError,
+		contextState,
+	});
+	const exposedCommandNames = new Set(remoteCommands.map((c) => c.name));
 
 	const routeToolCall = createToolRouter({
-		executeCommand: engine.executeCommand,
-		executeBatch: engine.executeBatch,
-		executePipeline: engine.executePipeline,
-		commands,
+		executeCommand: remoteEngine.executeCommand,
+		executeBatch: remoteEngine.executeBatch,
+		executePipeline: remoteEngine.executePipeline,
+		commands: remoteCommands,
 		toolStrategy,
 		groupByFn,
 		devMode,
-		allCommands: commands,
+		allCommands: remoteCommands,
 		exposedCommandNames,
 		contextState,
 	});
 
 	const boundGetToolsList = () =>
-		getToolsList(commands, toolStrategy, groupByFn, contextState?.getActive());
+		getToolsList(remoteCommands, toolStrategy, groupByFn, contextState?.getActive());
 
-	const { handler } = createHttpHandler({
+	const { handler, dispose } = createHttpHandler({
 		name,
 		version,
 		host,
 		port,
 		cors,
 		devMode,
+		allowedHosts: options.allowedHosts,
+		allowedOrigins: options.allowedOrigins,
+		maxBodyBytes: options.maxBodyBytes,
 		getToolsList: boundGetToolsList,
 		routeToolCall,
-		executeCommand: engine.executeCommand,
-		executeBatch: engine.executeBatch,
-		executeStream: engine.executeStream,
+		executeCommand: remoteEngine.executeCommand,
+		executeBatch: remoteEngine.executeBatch,
+		executeStream: remoteEngine.executeStream,
 	});
 
 	return {
@@ -103,6 +149,7 @@ function createSharedHttpRuntime(options: McpHandlerOptions) {
 		routeToolCall,
 		getToolsList: boundGetToolsList,
 		handler,
+		dispose,
 		url: `http://${host}:${port}`,
 	};
 }
@@ -115,7 +162,8 @@ function createSharedHttpRuntime(options: McpHandlerOptions) {
  * any Node HTTP host that accepts `(req, res) => Promise<void>`.
  */
 export function createMcpHandler(options: McpHandlerOptions): McpHandler {
-	return createSharedHttpRuntime(options).handler;
+	const runtime = createSharedHttpRuntime(options);
+	return Object.assign(runtime.handler, { dispose: runtime.dispose });
 }
 
 /**
@@ -173,6 +221,7 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 	// ── Shared execution/runtime wiring ─────────────────────────────────────
 
 	const sharedRuntime = createSharedHttpRuntime({
+		...options,
 		name,
 		version,
 		commands,
@@ -248,6 +297,8 @@ export function createMcpServer(options: McpServerOptions): McpServer {
 			}
 
 			if (httpServer) {
+				sharedRuntime.dispose();
+				httpServer.closeAllConnections();
 				await new Promise<void>((resolve, reject) => {
 					httpServer?.close((err) => {
 						if (err) reject(err);

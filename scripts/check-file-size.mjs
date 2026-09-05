@@ -17,8 +17,8 @@
  * Skip directories: alfred/, python/, packages/rust/
  */
 
-import { readFileSync } from 'node:fs';
-import { basename, extname, normalize } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { basename, extname, join, normalize, relative, resolve } from 'node:path';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
@@ -28,13 +28,59 @@ const OVERRIDE_CAP = 1000;
 const OVERRIDE_PATTERN = /\/\/\s*afd-override:\s*max-lines=(\d+)/;
 
 // Skip patterns
-const SKIP_SUFFIXES = ['.stories.ts', '.test.ts', '.spec.ts', '.d.ts'];
+const SKIP_SUFFIXES = [
+	'.stories.ts',
+	'.test.ts',
+	'.spec.ts',
+	'.d.ts',
+	'.test.js',
+	'.spec.js',
+	'.test.mjs',
+	'.spec.mjs',
+];
 const SKIP_DIRS = ['node_modules', 'dist', 'alfred', 'python', 'packages/rust'];
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const args = process.argv.slice(2);
-const files = args.length > 0 ? args : [];
+
+function isSkippedDirectory(filePath) {
+	const normalized = normalize(filePath).replace(/\\/g, '/');
+	return SKIP_DIRS.some(
+		(dir) =>
+			normalized === dir || normalized.startsWith(`${dir}/`) || normalized.includes(`/${dir}/`)
+	);
+}
+
+/** Discover source files for full-repository checks. */
+export function discoverFiles(root = process.cwd()) {
+	const files = [];
+	const sourceRoots = ['packages', 'scripts'];
+
+	function visit(directory) {
+		let entries;
+		try {
+			entries = readdirSync(directory, { withFileTypes: true });
+		} catch {
+			return;
+		}
+
+		for (const entry of entries) {
+			const absolute = join(directory, entry.name);
+			const workspacePath = relative(root, absolute);
+			if (entry.isDirectory()) {
+				if (!isSkippedDirectory(workspacePath)) visit(absolute);
+			} else if (entry.isFile() && !shouldSkip(workspacePath)) {
+				files.push(workspacePath);
+			}
+		}
+	}
+
+	for (const sourceRoot of sourceRoots) visit(resolve(root, sourceRoot));
+	return files.sort();
+}
+
+const files = args.length > 0 ? args : discoverFiles();
 
 let violations = 0;
 let warnings = 0;
@@ -62,8 +108,10 @@ function shouldSkip(filePath) {
 	const ext = extname(filePath);
 	const normalized = normalize(filePath).replace(/\\/g, '/');
 
-	// Only check .ts and .js files
-	if (ext !== '.ts' && ext !== '.js') return true;
+	// Package source is TypeScript. JavaScript is checked only for repository scripts.
+	if (ext !== '.ts' && !(['.js', '.mjs'].includes(ext) && normalized.startsWith('scripts/'))) {
+		return true;
+	}
 
 	// Skip test, story, and declaration files
 	for (const suffix of SKIP_SUFFIXES) {
@@ -95,10 +143,6 @@ function parseOverride(lines) {
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
-
-if (files.length === 0) {
-	process.exit(0);
-}
 
 for (const filePath of files) {
 	if (shouldSkip(filePath)) continue;

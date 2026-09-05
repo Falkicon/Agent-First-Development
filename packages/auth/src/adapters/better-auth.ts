@@ -10,12 +10,34 @@ import type { AuthAdapter, AuthSessionState, SignInOptions } from '../types.js';
 import { LOADING, UNAUTHENTICATED } from '../types.js';
 
 /** Minimal interface for better-auth client — avoids hard import */
+interface BetterAuthErrorResponse {
+	message?: string;
+	status?: number;
+	statusText?: string;
+	code?: string;
+}
+
+/**
+ * The small portion of Better Auth's response contract used by this adapter.
+ * Better Auth reports provider failures as resolved `{ data, error }` values;
+ * they do not necessarily reject the promise.
+ */
+interface BetterAuthMethodResult {
+	data?: unknown | null;
+	error?: BetterAuthErrorResponse | null;
+}
+
+type BetterAuthMethodResponse = BetterAuthMethodResult | undefined;
+
 interface BetterAuthClient {
 	signIn: {
-		social: (params: { provider: string; callbackURL?: string }) => Promise<unknown>;
-		email: (params: { email: string; password: string }) => Promise<unknown>;
+		social: (params: {
+			provider: string;
+			callbackURL?: string;
+		}) => Promise<BetterAuthMethodResponse>;
+		email: (params: { email: string; password: string }) => Promise<BetterAuthMethodResponse>;
 	};
-	signOut: () => Promise<unknown>;
+	signOut: () => Promise<BetterAuthMethodResponse>;
 	useSession: () => {
 		subscribe: (
 			callback: (value: { data: BetterAuthSessionData | null; isPending: boolean }) => void
@@ -47,35 +69,40 @@ export class BetterAuthAdapter implements AuthAdapter {
 
 	async signIn(options: SignInOptions): Promise<void> {
 		try {
+			let result: BetterAuthMethodResponse;
 			if (options.method === 'credentials') {
-				await this.client.signIn.email({
+				result = await this.client.signIn.email({
 					email: options.email,
 					password: options.password ?? '',
 				});
 			} else {
-				await this.client.signIn.social({
+				result = await this.client.signIn.social({
 					provider: options.provider,
 					callbackURL: options.redirectTo,
 				});
 			}
+
+			const providerError = this.getResolvedProviderError(result);
+			if (providerError) {
+				if (options.method === 'credentials' && providerError.status === 401) {
+					throw AuthAdapterError.invalidCredentials();
+				}
+				throw AuthAdapterError.providerError('better-auth', this.describeError(providerError));
+			}
 		} catch (error) {
-			if (error instanceof AuthAdapterError) throw error;
-			throw AuthAdapterError.providerError(
-				'better-auth',
-				error instanceof Error ? error.message : String(error)
-			);
+			throw this.mapThrownError(error);
 		}
 	}
 
 	async signOut(): Promise<void> {
 		try {
-			await this.client.signOut();
+			const result = await this.client.signOut();
+			const providerError = this.getResolvedProviderError(result);
+			if (providerError) {
+				throw AuthAdapterError.providerError('better-auth', this.describeError(providerError));
+			}
 		} catch (error) {
-			if (error instanceof AuthAdapterError) throw error;
-			throw AuthAdapterError.providerError(
-				'better-auth',
-				error instanceof Error ? error.message : String(error)
-			);
+			throw this.mapThrownError(error);
 		}
 	}
 
@@ -106,18 +133,51 @@ export class BetterAuthAdapter implements AuthAdapter {
 	private setupSubscription(): void {
 		// biome-ignore lint/correctness/useHookAtTopLevel: useSession is a better-auth store accessor, not a React hook
 		const store = this.client.useSession();
-		this.unsubscribeStore = store.subscribe((value) => {
-			const newState = this.mapToState(value);
-			if (newState.status !== this.currentState.status) {
-				this.currentState = newState;
-				for (const listener of this.listeners) {
-					listener(newState);
-				}
-			}
-		});
 
-		// Initialize from current store value
+		// Read before subscribing so stores that invoke the callback immediately do
+		// not replace an equivalent initial snapshot with a new object.
 		this.currentState = this.mapToState(store.get());
+		this.unsubscribeStore = store.subscribe((value) => {
+			this.updateState(value);
+		});
+		// A store can change while subscribe() is being attached without calling
+		// the callback. Reconcile once more so the adapter never exposes a stale
+		// initial snapshot.
+		this.updateState(store.get());
+	}
+
+	private updateState(value: { data: BetterAuthSessionData | null; isPending: boolean }): void {
+		const newState = this.mapToState(value);
+		if (areSessionStatesEqual(newState, this.currentState)) return;
+
+		this.currentState = newState;
+		for (const listener of this.listeners) {
+			listener(newState);
+		}
+	}
+
+	private getResolvedProviderError(
+		result: BetterAuthMethodResponse
+	): BetterAuthErrorResponse | null {
+		return result?.error ?? null;
+	}
+
+	private describeError(error: BetterAuthErrorResponse): string | undefined {
+		if (error.message) return error.message;
+		if (error.statusText) return error.statusText;
+		if (error.code) return error.code;
+		return error.status === undefined ? undefined : `status ${error.status}`;
+	}
+
+	private mapThrownError(error: unknown): AuthAdapterError {
+		if (error instanceof AuthAdapterError) return error;
+
+		const message = error instanceof Error ? error.message : String(error);
+		if (isKnownNetworkFailure(error, message)) {
+			return AuthAdapterError.networkError();
+		}
+
+		return AuthAdapterError.providerError('better-auth', message);
 	}
 
 	private mapToState(value: {
@@ -149,4 +209,28 @@ export class BetterAuthAdapter implements AuthAdapter {
 			},
 		};
 	}
+}
+
+function isKnownNetworkFailure(error: unknown, message: string): boolean {
+	if (error instanceof Error && (error.name === 'NetworkError' || error.name === 'TimeoutError')) {
+		return true;
+	}
+
+	return /failed to fetch|fetch failed|network (?:request )?failed|connection (?:refused|reset|closed)|request timed out/i.test(
+		message
+	);
+}
+
+function areSessionStatesEqual(left: AuthSessionState, right: AuthSessionState): boolean {
+	if (left.status !== right.status) return false;
+	if (left.status !== 'authenticated' || right.status !== 'authenticated') return true;
+
+	return (
+		left.session.id === right.session.id &&
+		left.session.expiresAt.getTime() === right.session.expiresAt.getTime() &&
+		left.user.id === right.user.id &&
+		left.user.email === right.user.email &&
+		left.user.name === right.user.name &&
+		left.user.image === right.user.image
+	);
 }

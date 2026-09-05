@@ -7,7 +7,12 @@ import { ConformanceRunner } from './conformance.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function run() {
-	const target = process.argv[2] || 'ts';
+	const backendOption = process.argv.indexOf('--backend');
+	const target = backendOption >= 0 ? process.argv[backendOption + 1] : undefined;
+	if (target !== 'ts' && target !== 'py') {
+		console.error('Usage: tsx dx/run-conformance.ts --backend <ts|py>');
+		process.exit(1);
+	}
 	const specPath = path.join(__dirname, '../spec/test-cases.json');
 
 	console.log(`Running conformance tests against: ${target}`);
@@ -18,17 +23,14 @@ async function run() {
 		transport = new StdioClientTransport({
 			command: 'node',
 			args: [path.join(__dirname, '../backends/typescript/dist/server.js')],
-			env: { ...process.env, PORT: '3101' },
+			env: { ...process.env, PORT: '3101', TODO_STORE_TYPE: 'memory' },
 		});
 	} else if (target === 'py') {
 		transport = new StdioClientTransport({
-			command: 'python',
-			args: [path.join(__dirname, '../backends/python/src/server.py')],
-			env: process.env as Record<string, string>,
+			command: 'uv',
+			args: ['run', '--project', path.join(__dirname, '../backends/python'), 'todo-server'],
+			env: { ...process.env, TODO_STORE_TYPE: 'memory' } as Record<string, string>,
 		});
-	} else {
-		console.error(`Unknown target: ${target}`);
-		process.exit(1);
 	}
 
 	const client = new Client({ name: 'conformance-runner', version: '1.0.0' }, { capabilities: {} });
@@ -70,4 +72,7 @@ async function run() {
 	process.exit(passed === results.length ? 0 : 1);
 }
 
-run().catch(console.error);
+run().catch((error) => {
+	console.error(error);
+	process.exit(1);
+});

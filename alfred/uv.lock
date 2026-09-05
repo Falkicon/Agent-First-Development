@@ -20,20 +20,16 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "afd" },
+    { name = "click" },
     { name = "lushly-botcore" },
+    { name = "rich" },
 ]
 
 [package.optional-dependencies]
-cli = [
-    { name = "click" },
-    { name = "rich" },
-]
 dev = [
-    { name = "click" },
     { name = "lushly-botcore", extra = ["mcp"] },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "rich" },
     { name = "ruff" },
 ]
 mcp = [
@@ -43,16 +39,16 @@ mcp = [
 [package.metadata]
 requires-dist = [
     { name = "afd", specifier = ">=0.2.0" },
-    { name = "alfred", extras = ["mcp", "cli"], marker = "extra == 'dev'" },
-    { name = "click", marker = "extra == 'cli'", specifier = ">=8.0" },
+    { name = "alfred", extras = ["mcp"], marker = "extra == 'dev'" },
+    { name = "click", specifier = ">=8.0" },
     { name = "lushly-botcore", specifier = ">=0.2.0" },
     { name = "lushly-botcore", extras = ["mcp"], marker = "extra == 'mcp'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-    { name = "rich", marker = "extra == 'cli'", specifier = ">=13.0" },
+    { name = "rich", specifier = ">=13.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.1.0" },
 ]
-provides-extras = ["mcp", "cli", "dev"]
+provides-extras = ["mcp", "dev"]
 
 [[package]]
 name = "annotated-types"

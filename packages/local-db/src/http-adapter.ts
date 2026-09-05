@@ -71,10 +71,14 @@ export class HttpAdapter implements DataAdapter {
 		return `${base}?${qs}`;
 	}
 
-	private async request<T>(url: string, init?: RequestInit): Promise<T> {
+	private async request<T>(
+		url: string,
+		init?: RequestInit,
+		options?: { allowNotFound?: boolean }
+	): Promise<T> {
 		const res = await this.fetchFn(url, init);
 		if (!res.ok) {
-			if (res.status === 404) return null as T;
+			if (res.status === 404 && options?.allowNotFound) return null as T;
 			const body = await res.text().catch(() => '');
 			throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
 		}
@@ -84,7 +88,9 @@ export class HttpAdapter implements DataAdapter {
 
 	async get<T>(table: string, id: string): Promise<T | null> {
 		const path = this.resolvePath(table);
-		return this.request<T | null>(this.url(`${path}/${id}`));
+		return this.request<T | null>(this.url(`${path}/${encodeURIComponent(id)}`), undefined, {
+			allowNotFound: true,
+		});
 	}
 
 	async list<T>(table: string, params?: QueryParams): Promise<ListResult<T>> {
@@ -110,7 +116,7 @@ export class HttpAdapter implements DataAdapter {
 	async update<T>(table: string, id: string, patch: Partial<T>): Promise<T> {
 		const path = this.resolvePath(table);
 		const method = UPSERT_TABLES.has(table) ? 'PUT' : 'PATCH';
-		return this.request<T>(this.url(`${path}/${id}`), {
+		return this.request<T>(this.url(`${path}/${encodeURIComponent(id)}`), {
 			method,
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify(patch),
@@ -119,7 +125,7 @@ export class HttpAdapter implements DataAdapter {
 
 	async remove(table: string, id: string): Promise<void> {
 		const path = this.resolvePath(table);
-		await this.request<void>(this.url(`${path}/${id}`), { method: 'DELETE' });
+		await this.request<void>(this.url(`${path}/${encodeURIComponent(id)}`), { method: 'DELETE' });
 	}
 
 	async batch(operations: BatchOperation[]): Promise<BatchResult> {

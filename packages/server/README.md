@@ -29,6 +29,7 @@ import { defineCommand, createMcpServer, defaultMiddleware, success, failure } f
 
 // Define a command with Zod schema
 const greet = defineCommand({
+  expose: { mcp: true }, // Explicitly allow remote invocation
   name: 'greet',
   description: 'Greet a user by name',
   category: 'demo',
@@ -59,8 +60,14 @@ const server = createMcpServer({
 });
 
 await server.start();
-console.log(`Server running at ${server.getUrl()}`);
+console.error(`Server running at ${server.getUrl()}`);
 ```
+
+## Remote Command Exposure
+
+Remote invocation now enforces the core exposure contract: commands require `expose: { mcp: true }`. Omitting `expose`, omitting `expose.mcp`, or setting it to `false` keeps a command private. This applies to tool listing, discovery, direct MCP calls, `afd-call`, batch, pipelines, `/rpc`, and streaming. Existing applications should explicitly opt in their public commands. The server's in-process `execute()` and `executePipeline()` remain available for private commands.
+
+Configured `contexts` automatically register `afd-context-list`, `afd-context-enter`, and `afd-context-exit` against the server's shared context state. Active contexts scope all remote execution paths; context state belongs to the server instance.
 
 ## Embedding In A Host-Controlled HTTP Server
 
@@ -82,6 +89,8 @@ createServer((req, res) => {
   void handler(req, res);
 }).listen(3100, '127.0.0.1');
 ```
+
+Call `handler.dispose()` when the embedding host shuts down to close active SSE/stream responses. The host still owns its listener and other connections.
 
 Use `createMcpServer()` for the batteries-included standalone server. Use `createMcpHandler()` when you need AFD to plug into an existing Node HTTP host.
 
@@ -147,7 +156,7 @@ const server = createMcpServer({
 });
 
 await server.start();
-console.log(`Server running at ${server.getUrl()}`);
+console.error(`Server running at ${server.getUrl()}`);
 // Exposes /sse, /message, /health endpoints
 ```
 
@@ -462,6 +471,9 @@ Create an MCP server from commands.
 | `contexts` | `{ name, description }[]` | No | Context scopes for dynamic tool filtering |
 | `devMode` | boolean | No | Enable development mode (default: false) |
 | `cors` | boolean | No | Enable CORS for HTTP transport (default: follows devMode) |
+| `allowedOrigins` | string[] | No | Additional exact browser origins |
+| `allowedHosts` | string[] | No | Accepted HTTP hostnames, without ports |
+| `maxBodyBytes` | number | No | Maximum JSON body bytes (default: 1048576) |
 | `middleware` | array | No | Middleware functions |
 | `onCommand` | function | No | Command execution callback |
 | `onError` | function | No | Error callback |
@@ -497,6 +509,9 @@ The server exposes these endpoints:
 | `/message` | POST | JSON-RPC message endpoint |
 | `/rpc` | POST | Simple JSON-RPC for browser clients |
 | `/health` | GET | Health check |
+| `/batch` | POST | Batch command execution |
+| `/stream/:name` | POST | SSE chunks with command input in the JSON body |
+| `/stream/:name?input=...` | GET | Legacy streaming with JSON input in the query |
 
 ### Browser-Friendly `/rpc` Endpoint
 
@@ -540,7 +555,13 @@ console.log(result.data.greeting); // "Hello, World!"
 
 ### CORS Configuration
 
-CORS is enabled by default for HTTP transport. Configure it in server options:
+HTTP requests validate Host and browser Origin before dispatch. The default Host allowlist contains the configured host and loopback names. Requests without an Origin (such as CLI clients) and same-origin browser requests are accepted. Cross-site browser requests are rejected unless their exact Origin is listed in `allowedOrigins`. `cors: true` adds response headers for accepted origins; it does not disable request validation. `devMode: true` intentionally permits any browser origin, while Host checks remain enabled.
+
+All POST endpoints require `Content-Type: application/json`. Request bodies are limited to 1 MiB by default; set `maxBodyBytes` to change the limit. Configure `allowedHosts` and `allowedOrigins` explicitly when embedding behind a proxy. Forwarded headers are not trusted automatically.
+
+POST streaming is preferred because input stays out of URLs. Legacy GET streaming remains supported and applies the same browser-origin policy.
+
+Configure a browser UI explicitly:
 
 ```typescript
 const server = createMcpServer({
@@ -549,8 +570,10 @@ const server = createMcpServer({
   commands: [greet],
   transport: 'http',
   port: 3100,
-  cors: true,      // Enable CORS (default: true)
-  devMode: true,   // Development mode enables permissive CORS
+  cors: true,
+  allowedOrigins: ['https://app.example.com'],
+  allowedHosts: ['localhost', 'api.example.com'],
+  maxBodyBytes: 1024 * 1024,
 });
 ```
 
@@ -607,3 +630,9 @@ Commands without `contexts` are always visible. Context commands themselves are 
 - [@lushly-dev/afd-client](../client) - MCP client library
 - [@lushly-dev/afd-cli](../cli) - Command-line interface
 - [Example: Todo App](../examples/todo/) - Complete working example
+
+### Pipeline execution limits
+
+Pipelines run sequentially. `parallel: true` returns an actionable `UNSUPPORTED_OPTION` failure before invoking a command. `timeoutMs` bounds each awaited step by the remaining pipeline deadline and aborts its `context.signal`; handlers must honor that signal to stop their own work. A timed-out mutation may still finish if its handler ignores cancellation, so inspect partial results before retrying. Numeric `$steps[n]` references use original request indices, including skipped or failed steps. `$first` refers to original step zero; `$prev` keeps the last successful result.
+
+Default logging and console telemetry write to stderr so stdio MCP frames remain valid. In-memory rate limiting expires old client keys as requests arrive and caps active keys with `maxKeys` (default: 10000); new keys receive `RATE_LIMITED` while capacity is full.

@@ -147,8 +147,7 @@ alfred/
 
 ## Dependencies
 
-- **Core:** `lushly-botcore>=0.1.0`, `afd>=0.2.0`
-- **CLI:** `click>=8.0`, `rich>=13.0`
+- **Core:** `lushly-botcore>=0.2.0`, `afd>=0.2.0`, `click>=8.0`, `rich>=13.0`
 - **MCP:** `lushly-botcore[mcp]`
 - **Python:** ≥3.11
 

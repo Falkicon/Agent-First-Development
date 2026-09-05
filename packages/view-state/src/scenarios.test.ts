@@ -13,6 +13,9 @@ function createHandler(
 		set: (partial: Partial<Record<string, unknown>>) => {
 			Object.assign(obj.state, partial);
 		},
+		replace: (state: Record<string, unknown>) => {
+			obj.state = { ...state };
+		},
 	};
 	return obj;
 }

@@ -1,3 +1,4 @@
+// afd-override: max-lines=950 — MCP client lifecycle and public request APIs; parsing and transport helpers are separate modules
 /**
  * @fileoverview MCP Client implementation
  */
@@ -30,7 +31,15 @@ import {
 	success,
 	wrapError,
 } from '@lushly-dev/afd-core';
-
+import {
+	createBatchFailure,
+	createPipelineFailure,
+	getTextContent,
+	isBatchResult,
+	isCommandResult,
+	isPipelineResult,
+	parseTextContent,
+} from './result-parsing.js';
 import { createTransport, type Transport } from './transport.js';
 import type {
 	ClientStatus,
@@ -82,6 +91,13 @@ export class McpClient {
 	private connectedAt: Date | null = null;
 	private reconnectAttempts = 0;
 	private pendingRequests = new Map<string | number, PendingRequest>();
+	private intentionalDisconnect = false;
+	private connectionGeneration = 0;
+	private connectionController: AbortController | null = null;
+	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	private reconnectDelayResolve: (() => void) | null = null;
+	private reconnectPromise: Promise<void> | null = null;
+	private reconnectGeneration: number | null = null;
 	private eventHandlers: EventMap = {
 		stateChange: [],
 		connected: [],
@@ -126,66 +142,31 @@ export class McpClient {
 			throw new Error('Already connected');
 		}
 
-		this.setState('connecting');
-
-		try {
-			// Create transport
-			if (this.config.transport === 'stdio') {
-				throw new Error('stdio transport not yet implemented');
-			}
-
-			if (this.config.transport === 'direct') {
-				throw new Error(
-					'Direct transport requires a registry. Use DirectClient or DirectTransport instead.'
-				);
-			}
-
-			this.transport = createTransport(this.config.transport, this.config.url, this.config.headers);
-
-			// Set up transport handlers
-			this.transport.onMessage((response) => this.handleMessage(response));
-			this.transport.onError((error) => this.handleError(error));
-			this.transport.onClose(() => this.handleClose());
-
-			// Connect transport
-			await this.transport.connect();
-
-			// Initialize MCP session
-			const initResult = await this.initialize();
-
-			this.serverInfo = initResult.serverInfo;
-			this.capabilities = initResult.capabilities;
-			this.connectedAt = new Date();
-			this.reconnectAttempts = 0;
-
-			this.setState('connected');
-			this.emit('connected', initResult);
-
-			// Fetch initial tools list
-			await this.refreshTools();
-
-			return initResult;
-		} catch (error) {
-			this.setState('error');
-			const err = error instanceof Error ? error : new Error(String(error));
-			this.emit('error', err);
-			throw err;
-		}
+		this.intentionalDisconnect = false;
+		this.cancelReconnectDelay();
+		this.reconnectAttempts = 0;
+		const generation = ++this.connectionGeneration;
+		return this.establishConnection(generation, false);
 	}
 
 	/**
 	 * Disconnect from the MCP server.
 	 */
 	async disconnect(): Promise<void> {
-		if (this.transport) {
-			this.transport.disconnect();
-			this.transport = null;
-		}
+		this.intentionalDisconnect = true;
+		this.connectionGeneration++;
+		this.cancelReconnectDelay();
+		this.connectionController?.abort(new Error('Client disconnected'));
+		this.connectionController = null;
+
+		const transport = this.transport;
+		this.transport = null;
+		transport?.disconnect();
 
 		// Reject all pending requests
-		for (const [_id, pending] of this.pendingRequests) {
+		for (const pending of this.pendingRequests.values()) {
 			clearTimeout(pending.timeout);
-			pending.reject(new Error('Client disconnected'));
+			pending.controller.abort(new Error('Client disconnected'));
 		}
 		this.pendingRequests.clear();
 
@@ -276,13 +257,14 @@ export class McpClient {
 	async call<T = unknown>(name: string, args?: Record<string, unknown>): Promise<CommandResult<T>> {
 		try {
 			const result = await this.callTool(name, args);
+			const parsed = parseTextContent(result);
+
+			if (isCommandResult(parsed)) {
+				return parsed as CommandResult<T>;
+			}
 
 			if (result.isError) {
-				// Extract error from content
-				const errorText = result.content
-					.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-					.map((c) => c.text)
-					.join('\n');
+				const errorText = getTextContent(result);
 
 				return failure({
 					code: 'TOOL_ERROR',
@@ -292,26 +274,10 @@ export class McpClient {
 			}
 
 			// Try to parse JSON from text content
-			const textContent = result.content
-				.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-				.map((c) => c.text)
-				.join('');
+			if (parsed !== undefined) return success(parsed as T);
 
-			try {
-				const data = JSON.parse(textContent);
-
-				// If the data is already a CommandResult, return it directly
-				if (typeof data === 'object' && data !== null && 'success' in data) {
-					return data as CommandResult<T>;
-				}
-
-				// Wrap raw data in a success result
-				return success(data as T);
-			} catch {
-				// SAFETY: JSON parsing failed, so we return the raw text. The caller expects T but
-				// will receive a string — acceptable as a best-effort fallback for non-JSON responses.
-				return success(textContent as unknown as T);
-			}
+			// SAFETY: Non-AFD tools may return plain text. Preserve that established fallback.
+			return success(getTextContent(result) as unknown as T);
 		} catch (error) {
 			return failure(wrapError(error));
 		}
@@ -347,101 +313,53 @@ export class McpClient {
 		const startedAt = new Date().toISOString();
 
 		try {
-			const result = await this.callTool('afd.batch', {
+			const result = await this.callTool('afd-batch', {
 				commands,
 				options,
 			});
+			const parsed = parseTextContent(result);
+
+			if (isBatchResult(parsed)) {
+				return parsed as BatchResult<T>;
+			}
 
 			if (result.isError) {
-				const errorText = result.content
-					.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-					.map((c) => c.text)
-					.join('\n');
+				const errorText = getTextContent(result);
 
-				// Return failed batch result
-				return {
-					success: false,
-					results: [],
-					summary: {
-						total: commands.length,
-						successCount: 0,
-						failureCount: commands.length,
-						skippedCount: 0,
-					},
-					timing: {
-						startedAt,
-						completedAt: new Date().toISOString(),
-						totalMs: 0,
-						averageMs: 0,
-					},
-					confidence: 0,
-					reasoning: `Batch execution failed: ${errorText || 'Unknown error'}`,
-					error: {
+				return createBatchFailure(
+					commands,
+					startedAt,
+					{
 						code: 'BATCH_ERROR',
 						message: errorText || 'Batch execution failed',
 						suggestion: 'Check the batch commands and try again',
 					},
-				};
+					`Batch execution failed: ${errorText || 'Unknown error'}`
+				);
 			}
 
-			// Parse batch result from response
-			const textContent = result.content
-				.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-				.map((c) => c.text)
-				.join('');
-
-			try {
-				return JSON.parse(textContent) as BatchResult<T>;
-			} catch {
-				return {
-					success: false,
-					results: [],
-					summary: {
-						total: commands.length,
-						successCount: 0,
-						failureCount: commands.length,
-						skippedCount: 0,
-					},
-					timing: {
-						startedAt,
-						completedAt: new Date().toISOString(),
-						totalMs: 0,
-						averageMs: 0,
-					},
-					confidence: 0,
-					reasoning: 'Failed to parse batch result',
-					error: {
-						code: 'PARSE_ERROR',
-						message: 'Failed to parse batch result',
-						suggestion: 'The server returned an invalid response',
-					},
-				};
-			}
+			return createBatchFailure(
+				commands,
+				startedAt,
+				{
+					code: 'PARSE_ERROR',
+					message: 'Failed to parse batch result',
+					suggestion: 'The server returned an invalid response',
+				},
+				'Failed to parse batch result'
+			);
 		} catch (error) {
 			const err = error instanceof Error ? error.message : String(error);
-			return {
-				success: false,
-				results: [],
-				summary: {
-					total: commands.length,
-					successCount: 0,
-					failureCount: commands.length,
-					skippedCount: 0,
-				},
-				timing: {
-					startedAt,
-					completedAt: new Date().toISOString(),
-					totalMs: 0,
-					averageMs: 0,
-				},
-				confidence: 0,
-				reasoning: `Batch execution failed: ${err}`,
-				error: {
+			return createBatchFailure(
+				commands,
+				startedAt,
+				{
 					code: 'BATCH_ERROR',
 					message: err,
 					suggestion: 'Check the connection and try again',
 				},
-			};
+				`Batch execution failed: ${err}`
+			);
 		}
 	}
 
@@ -482,95 +400,30 @@ export class McpClient {
 			// SAFETY: PipelineRequest is a plain object that serializes correctly as Record<string, unknown>
 			// for the MCP tool call wire format.
 			const result = await this.callTool('afd-pipe', request as unknown as Record<string, unknown>);
+			const parsed = parseTextContent(result);
+
+			if (isPipelineResult(parsed)) {
+				return parsed as PipelineResult<T>;
+			}
 
 			if (result.isError) {
-				const errorText = result.content
-					.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-					.map((c) => c.text)
-					.join('\n');
+				const errorText = getTextContent(result);
 
-				// Return failed pipeline result
-				return {
-					data: undefined as T,
-					metadata: {
-						confidence: 0,
-						confidenceBreakdown: [],
-						reasoning: [],
-						warnings: [],
-						sources: [],
-						alternatives: [],
-						executionTimeMs: 0,
-						completedSteps: 0,
-						totalSteps: request.steps.length,
-					},
-					steps: request.steps.map((step, i) => ({
-						index: i,
-						alias: step.as,
-						command: step.command,
-						status: 'failure' as const,
-						error: {
-							code: 'PIPELINE_ERROR',
-							message: errorText || 'Pipeline execution failed',
-							suggestion: 'Check the pipeline steps and try again',
-						},
-						executionTimeMs: 0,
-					})),
-				};
+				return createPipelineFailure<T>(request, {
+					code: 'PIPELINE_ERROR',
+					message: errorText || 'Pipeline execution failed',
+					suggestion: 'Check the pipeline steps and try again',
+				});
 			}
 
-			// Parse pipeline result from response
-			const textContent = result.content
-				.filter((c): c is { type: 'text'; text: string } => c.type === 'text')
-				.map((c) => c.text)
-				.join('');
-
-			try {
-				return JSON.parse(textContent) as PipelineResult<T>;
-			} catch {
-				return {
-					data: undefined as T,
-					metadata: {
-						confidence: 0,
-						confidenceBreakdown: [],
-						reasoning: [],
-						warnings: [],
-						sources: [],
-						alternatives: [],
-						executionTimeMs: 0,
-						completedSteps: 0,
-						totalSteps: request.steps.length,
-					},
-					steps: [],
-				};
-			}
+			return createPipelineFailure<T>(request);
 		} catch (error) {
 			const err = error instanceof Error ? error.message : String(error);
-			return {
-				data: undefined as T,
-				metadata: {
-					confidence: 0,
-					confidenceBreakdown: [],
-					reasoning: [],
-					warnings: [],
-					sources: [],
-					alternatives: [],
-					executionTimeMs: 0,
-					completedSteps: 0,
-					totalSteps: request.steps.length,
-				},
-				steps: request.steps.map((step, i) => ({
-					index: i,
-					alias: step.as,
-					command: step.command,
-					status: 'failure' as const,
-					error: {
-						code: 'PIPELINE_ERROR',
-						message: err,
-						suggestion: 'Check the connection and try again',
-					},
-					executionTimeMs: 0,
-				})),
-			};
+			return createPipelineFailure<T>(request, {
+				code: 'PIPELINE_ERROR',
+				message: err,
+				suggestion: 'Check the connection and try again',
+			});
 		}
 	}
 
@@ -612,7 +465,7 @@ export class McpClient {
 
 		const controller = new AbortController();
 		const signal = options?.signal
-			? this.combineSignals(options.signal, controller.signal)
+			? AbortSignal.any([options.signal, controller.signal])
 			: controller.signal;
 
 		// Setup timeout if specified
@@ -621,6 +474,8 @@ export class McpClient {
 			timeoutId = setTimeout(() => controller.abort(), options.timeout);
 		}
 
+		let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+		let chunksReceived = 0;
 		try {
 			const response = await fetch(streamUrl, {
 				method: 'POST',
@@ -647,7 +502,7 @@ export class McpClient {
 				return;
 			}
 
-			const reader = response.body?.getReader();
+			reader = response.body?.getReader();
 			if (!reader) {
 				yield {
 					type: 'error',
@@ -664,7 +519,6 @@ export class McpClient {
 
 			const decoder = new TextDecoder();
 			let buffer = '';
-			let _chunksReceived = 0;
 
 			while (true) {
 				const { done, value } = await reader.read();
@@ -686,7 +540,7 @@ export class McpClient {
 
 						try {
 							const chunk = JSON.parse(data) as StreamChunk<T>;
-							_chunksReceived++;
+							chunksReceived++;
 							yield chunk;
 
 							// Stop on complete or error
@@ -709,20 +563,29 @@ export class McpClient {
 						message: 'Stream was cancelled',
 						suggestion: 'The request was aborted by the client',
 					},
-					chunksBeforeError: 0,
+					chunksBeforeError: chunksReceived,
 					recoverable: false,
 				};
 			} else {
 				yield {
 					type: 'error',
 					error: wrapError(error),
-					chunksBeforeError: 0,
+					chunksBeforeError: chunksReceived,
 					recoverable: true,
 				};
 			}
 		} finally {
 			if (timeoutId) {
 				clearTimeout(timeoutId);
+			}
+			controller.abort();
+			if (reader) {
+				try {
+					await reader.cancel();
+				} catch {
+					// The underlying fetch may already have released the reader.
+				}
+				reader.releaseLock();
 			}
 		}
 	}
@@ -768,25 +631,6 @@ export class McpClient {
 		}
 	}
 
-	/**
-	 * Combine two AbortSignals into one.
-	 */
-	private combineSignals(signal1: AbortSignal, signal2: AbortSignal): AbortSignal {
-		const controller = new AbortController();
-
-		const abort = () => controller.abort();
-
-		signal1.addEventListener('abort', abort);
-		signal2.addEventListener('abort', abort);
-
-		// Abort if either is already aborted
-		if (signal1.aborted || signal2.aborted) {
-			controller.abort();
-		}
-
-		return controller.signal;
-	}
-
 	// ═══════════════════════════════════════════════════════════════════════════
 	// LOW-LEVEL REQUEST/RESPONSE
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -795,10 +639,12 @@ export class McpClient {
 	 * Send a raw MCP request and wait for response.
 	 */
 	async request<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T> {
-		// Allow requests during 'connecting' (for initialize) and 'connected' states
+		// Initialization requests must work during both initial connection and reconnection.
 		const canRequest =
 			this.transport &&
-			(this.state === 'connected' || this.state === 'connecting') &&
+			(this.state === 'connected' ||
+				this.state === 'connecting' ||
+				this.state === 'reconnecting') &&
 			this.transport.isConnected();
 
 		if (!canRequest || !this.transport) {
@@ -807,17 +653,28 @@ export class McpClient {
 
 		const request = createMcpRequest(method, params);
 		this.debug(`Request [${request.id}]: ${method}`, params);
+		const transport = this.transport;
+		const controller = new AbortController();
+		const timeout = setTimeout(() => {
+			controller.abort(new Error(`Request '${method}' timed out after ${this.config.timeout}ms`));
+		}, this.config.timeout);
+		this.pendingRequests.set(request.id, { controller, timeout, method });
 
-		// For transports that return response directly
-		const response = await this.transport.send(request);
+		try {
+			const response = await transport.send(request, controller.signal);
+			this.debug(`Response [${request.id}]:`, response);
 
-		this.debug(`Response [${request.id}]:`, response);
-
-		if (response.error) {
-			throw new Error(response.error.message);
+			if (response.error) throw new Error(response.error.message);
+			return response.result as T;
+		} catch (error) {
+			if (controller.signal.aborted && controller.signal.reason instanceof Error) {
+				throw controller.signal.reason;
+			}
+			throw error;
+		} finally {
+			clearTimeout(timeout);
+			this.pendingRequests.delete(request.id);
 		}
-
-		return response.result as T;
 	}
 
 	// ═══════════════════════════════════════════════════════════════════════════
@@ -877,6 +734,119 @@ export class McpClient {
 		return this.request<McpInitializeResult>('initialize', params as Record<string, unknown>);
 	}
 
+	private async establishConnection(
+		generation: number,
+		reconnecting: boolean
+	): Promise<McpInitializeResult> {
+		this.setState(reconnecting ? 'reconnecting' : 'connecting');
+
+		if (this.config.transport === 'stdio') {
+			throw new Error('stdio transport not yet implemented');
+		}
+		if (this.config.transport === 'direct') {
+			throw new Error(
+				'Direct transport requires a registry. Use DirectClient or DirectTransport instead.'
+			);
+		}
+
+		const transport = createTransport(this.config.transport, this.config.url, this.config.headers);
+		this.transport = transport;
+		transport.onMessage((response) => this.handleMessage(response));
+		transport.onError((error) => this.handleError(error));
+		transport.onClose(() => this.handleClose(generation, transport));
+
+		const controller = new AbortController();
+		this.connectionController = controller;
+		const timeout = setTimeout(() => {
+			controller.abort(new Error(`Connection timed out after ${this.config.timeout}ms`));
+		}, this.config.timeout);
+
+		try {
+			await transport.connect(controller.signal);
+			clearTimeout(timeout);
+			if (generation !== this.connectionGeneration || this.intentionalDisconnect) {
+				throw new Error('Connection attempt is no longer current');
+			}
+
+			const initResult = await this.initialize();
+			if (generation !== this.connectionGeneration || this.intentionalDisconnect) {
+				throw new Error('Connection attempt is no longer current');
+			}
+
+			this.serverInfo = initResult.serverInfo;
+			this.capabilities = initResult.capabilities;
+			this.connectedAt = new Date();
+			this.setState('connected');
+			this.emit('connected', initResult);
+			await this.refreshTools();
+			return initResult;
+		} catch (error) {
+			const err =
+				controller.signal.aborted && controller.signal.reason instanceof Error
+					? controller.signal.reason
+					: error instanceof Error
+						? error
+						: new Error(String(error));
+			if (this.transport === transport) this.transport = null;
+			transport.disconnect();
+			if (generation === this.connectionGeneration && !this.intentionalDisconnect) {
+				this.setState('error');
+				this.emit('error', err);
+			}
+			throw err;
+		} finally {
+			clearTimeout(timeout);
+			if (this.connectionController === controller) this.connectionController = null;
+		}
+	}
+
+	private async runReconnectLoop(generation: number): Promise<void> {
+		while (
+			!this.intentionalDisconnect &&
+			generation === this.connectionGeneration &&
+			this.reconnectAttempts < this.config.maxReconnectAttempts
+		) {
+			this.reconnectAttempts++;
+			this.setState('reconnecting');
+			this.emit('reconnecting', this.reconnectAttempts, this.config.maxReconnectAttempts);
+			const delay = this.config.reconnectDelay * 2 ** (this.reconnectAttempts - 1);
+			await this.waitForReconnectDelay(delay);
+			if (this.intentionalDisconnect || generation !== this.connectionGeneration) return;
+
+			try {
+				await this.establishConnection(generation, true);
+				this.reconnectAttempts = 0;
+				return;
+			} catch {
+				// Continue until the configured attempt bound is reached.
+			}
+		}
+
+		if (!this.intentionalDisconnect && generation === this.connectionGeneration) {
+			this.setState('error');
+			this.emit('error', new Error('Max reconnection attempts reached'));
+		}
+	}
+
+	private waitForReconnectDelay(delay: number): Promise<void> {
+		return new Promise((resolve) => {
+			this.reconnectDelayResolve = resolve;
+			this.reconnectTimer = setTimeout(() => {
+				this.reconnectTimer = null;
+				this.reconnectDelayResolve = null;
+				resolve();
+			}, delay);
+		});
+	}
+
+	private cancelReconnectDelay(): void {
+		if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+		this.reconnectTimer = null;
+		const resolve = this.reconnectDelayResolve;
+		this.reconnectDelayResolve = null;
+		resolve?.();
+	}
+
 	private setState(state: ConnectionState): void {
 		if (this.state !== state) {
 			this.state = state;
@@ -886,55 +856,37 @@ export class McpClient {
 
 	private handleMessage(response: McpResponse): void {
 		this.emit('message', response);
-
-		// Handle pending request if this is a response
-		const pending = this.pendingRequests.get(response.id);
-		if (pending) {
-			clearTimeout(pending.timeout);
-			this.pendingRequests.delete(response.id);
-
-			if (response.error) {
-				pending.reject(new Error(response.error.message));
-			} else {
-				pending.resolve(response.result);
-			}
-		}
 	}
 
 	private handleError(error: Error): void {
 		this.emit('error', error);
 	}
 
-	private handleClose(): void {
-		if (this.state === 'connected' && this.config.autoReconnect) {
-			this.attemptReconnect();
+	private handleClose(generation: number, transport: Transport): void {
+		if (generation !== this.connectionGeneration || transport !== this.transport) return;
+
+		if (!this.intentionalDisconnect && this.state === 'connected' && this.config.autoReconnect) {
+			void this.attemptReconnect(generation);
 		} else {
 			this.setState('disconnected');
 			this.emit('disconnected', 'Connection closed');
 		}
 	}
 
-	private async attemptReconnect(): Promise<void> {
-		if (this.reconnectAttempts >= this.config.maxReconnectAttempts) {
-			this.setState('error');
-			this.emit('error', new Error('Max reconnection attempts reached'));
-			return;
+	private attemptReconnect(generation: number): Promise<void> {
+		if (this.reconnectPromise && this.reconnectGeneration === generation) {
+			return this.reconnectPromise;
 		}
 
-		this.reconnectAttempts++;
-		this.setState('reconnecting');
-		this.emit('reconnecting', this.reconnectAttempts, this.config.maxReconnectAttempts);
-
-		// Exponential backoff
-		const delay = this.config.reconnectDelay * 2 ** (this.reconnectAttempts - 1);
-
-		await new Promise((resolve) => setTimeout(resolve, delay));
-
-		try {
-			await this.connect();
-		} catch {
-			// Will trigger another reconnect via handleClose
-		}
+		const reconnectPromise = this.runReconnectLoop(generation).finally(() => {
+			if (this.reconnectPromise === reconnectPromise) {
+				this.reconnectPromise = null;
+				this.reconnectGeneration = null;
+			}
+		});
+		this.reconnectPromise = reconnectPromise;
+		this.reconnectGeneration = generation;
+		return reconnectPromise;
 	}
 
 	private debug(message: string, data?: unknown): void {

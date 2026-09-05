@@ -229,7 +229,8 @@ describe('executePipeline', () => {
 			executor
 		);
 
-		expect(result.steps[0]?.status).toBe('success');
+		expect(result.steps[0]?.status).toBe('failure');
+		expect(result.steps[0]?.error?.code).toBe('PIPELINE_TIMEOUT');
 		expect(result.steps[1]?.status).toBe('skipped');
 		expect(result.steps[1]?.error?.code).toBe('PIPELINE_TIMEOUT');
 		expect(result.steps[1]?.error?.retryable).toBe(true);

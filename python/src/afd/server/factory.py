@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -374,39 +375,100 @@ class MCPServer:
             options = dict(payload.get("options") or {})
             if "stopOnError" in options and "stop_on_error" not in options:
                 options["stop_on_error"] = options.pop("stopOnError")
+            if "timeoutMs" in options:
+                if "timeout" in options:
+                    raise ValueError("Specify only one of timeout or timeoutMs")
+                options["timeout"] = options.pop("timeoutMs")
             payload["options"] = options
             request = BatchRequest.model_validate(payload)
 
-        try:
-            for index, batch_command in enumerate(request.commands):
+        options = request.options
+        parallelism = options.parallelism if options else 1
+        timeout_ms = options.timeout if options else None
+        semaphore = asyncio.Semaphore(parallelism)
+        stopped = False
+        timed_out = False
+
+        async def run_command(index: int):
+            nonlocal stopped, timed_out
+            batch_command = request.commands[index]
+            async with semaphore:
+                if stopped or timed_out:
+                    return None
                 command_start = time.perf_counter()
-                command_result = await self.execute(
-                    batch_command.command,
-                    batch_command.input,
-                    context,
-                )
-                duration_ms = (time.perf_counter() - command_start) * 1000
-                results.append(
-                    BatchCommandResult(
-                        id=batch_command.id or f"cmd-{index}",
-                        index=index,
-                        command=batch_command.command,
-                        result=command_result,
-                        duration_ms=duration_ms,
+                remaining = None
+                if timeout_ms is not None:
+                    remaining = (timeout_ms / 1000) - (time.perf_counter() - start_time)
+                try:
+                    if remaining is not None and remaining <= 0:
+                        raise asyncio.TimeoutError
+                    execution = self.execute(batch_command.command, batch_command.input, context)
+                    command_result = (
+                        await asyncio.wait_for(execution, timeout=remaining)
+                        if remaining is not None
+                        else await execution
                     )
+                except asyncio.TimeoutError:
+                    timed_out = True
+                    command_result = CommandResult(
+                        success=False,
+                        error=CommandError(
+                            code="BATCH_TIMEOUT",
+                            message=f"Batch timeout exceeded ({timeout_ms}ms)",
+                            suggestion="Increase timeout or reduce the number of commands",
+                            retryable=True,
+                        ),
+                    )
+                except Exception as exc:
+                    command_result = CommandResult(
+                        success=False,
+                        error=CommandError(
+                            code="COMMAND_EXECUTION_ERROR",
+                            message=str(exc),
+                            suggestion="Check the command implementation and retry",
+                        ),
+                    )
+                duration_ms = (time.perf_counter() - command_start) * 1000
+                if options and options.stop_on_error and not command_result.success:
+                    stopped = True
+                return BatchCommandResult(
+                    id=batch_command.id or f"cmd-{index}",
+                    index=index,
+                    command=batch_command.command,
+                    result=command_result,
+                    duration_ms=duration_ms,
                 )
-                if request.options and request.options.stop_on_error and not command_result.success:
-                    break
-        except Exception as exc:  # pragma: no cover - defensive
-            return create_failed_batch_result(
-                CommandError(
-                    code="BATCH_EXECUTION_ERROR",
-                    message=str(exc),
-                    suggestion="Check the batch payload and retry.",
+
+        scheduled = await asyncio.gather(
+            *(run_command(index) for index in range(len(request.commands)))
+        )
+        for index, result in enumerate(scheduled):
+            if result is not None:
+                results.append(result)
+                continue
+            batch_command = request.commands[index]
+            command_error = CommandError(
+                code="BATCH_TIMEOUT" if timed_out else "COMMAND_SKIPPED",
+                message=(
+                    f"Batch timeout exceeded ({timeout_ms}ms)"
+                    if timed_out
+                    else "Command skipped because batch execution stopped after a failure"
                 ),
-                total_ms=(time.perf_counter() - start_time) * 1000,
-                started_at=started_at,
-                completed_at=datetime.now(timezone.utc).isoformat(),
+                suggestion=(
+                    "Increase timeout or reduce the number of commands"
+                    if timed_out
+                    else "Disable stop_on_error to execute every command"
+                ),
+                retryable=True if timed_out else None,
+            )
+            results.append(
+                BatchCommandResult(
+                    id=batch_command.id or f"cmd-{index}",
+                    index=index,
+                    command=batch_command.command,
+                    result=CommandResult(success=False, error=command_error),
+                    duration_ms=0,
+                )
             )
 
         total_ms = (time.perf_counter() - start_time) * 1000

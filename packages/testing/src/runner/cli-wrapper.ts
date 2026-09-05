@@ -29,6 +29,8 @@ export interface CliConfig {
 
 	/** MCP server URL for --connect option */
 	serverUrl?: string;
+	/** Transport used by the per-command connection (default: http) */
+	transport?: 'sse' | 'http';
 
 	/** Whether to output verbose logging */
 	verbose?: boolean;
@@ -92,6 +94,7 @@ export class CliWrapper {
 			timeout: config.timeout ?? 30000,
 			verbose: config.verbose ?? false,
 			serverUrl: config.serverUrl,
+			transport: config.transport ?? 'http',
 		};
 	}
 
@@ -169,18 +172,18 @@ export class CliWrapper {
 	private buildArgs(command: string, input?: Record<string, unknown>): string[] {
 		const args: string[] = ['call', command];
 
+		// The CLI accepts one positional JSON argument and prints structured output
+		// through its regular --format option.
+		if (input && Object.keys(input).length > 0) {
+			args.push(JSON.stringify(input));
+		}
+
 		// Add server URL if configured
 		if (this.config.serverUrl) {
-			args.push('--connect', this.config.serverUrl);
+			args.push('--connect', this.config.serverUrl, '--transport', this.config.transport);
 		}
 
-		// Add JSON format for structured output
-		args.push('--json');
-
-		// Add input as JSON argument if provided
-		if (input && Object.keys(input).length > 0) {
-			args.push('--input', JSON.stringify(input));
-		}
+		args.push('--format', 'json');
 
 		return args;
 	}
@@ -250,21 +253,12 @@ export class CliWrapper {
 		// Look for JSON object in output (may have non-JSON prefix/suffix)
 		const jsonMatch = trimmed.match(/\{[\s\S]*\}/);
 		if (!jsonMatch) {
-			// If exit code is 0 but no JSON, treat as success with string data
-			if (exitCode === 0) {
-				return {
-					success: true,
-					result: {
-						success: true,
-						data: trimmed || undefined,
-					},
-				};
-			}
-
-			// Non-zero exit with no JSON is an error
 			return {
 				success: false,
-				error: createStepError('parse_error', stderr || stdout || 'Command failed with no output'),
+				error: createStepError(
+					'parse_error',
+					stderr || stdout || `CLI exited ${exitCode} without the requested JSON result`
+				),
 			};
 		}
 
@@ -307,6 +301,7 @@ export class CliWrapper {
 		if (config.env !== undefined) this.config.env = config.env;
 		if (config.timeout !== undefined) this.config.timeout = config.timeout;
 		if (config.serverUrl !== undefined) this.config.serverUrl = config.serverUrl;
+		if (config.transport !== undefined) this.config.transport = config.transport;
 		if (config.verbose !== undefined) this.config.verbose = config.verbose;
 	}
 }

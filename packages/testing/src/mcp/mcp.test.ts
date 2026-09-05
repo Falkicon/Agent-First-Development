@@ -2,6 +2,9 @@
  * @fileoverview Tests for MCP integration (Phase 3)
  */
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { failure, success } from '@lushly-dev/afd-core';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
@@ -177,6 +180,54 @@ describe('MCP Tools', () => {
 			expect(registry.size).toBe(5);
 			expect(registry.has('scenario-list')).toBe(true);
 			expect(registry.has('scenario-suggest')).toBe(true);
+		});
+
+		it('returns guidance when evaluation has no command handler', async () => {
+			const result = await executeTool(createToolRegistry(), 'scenario-evaluate', null);
+
+			expect(result).toMatchObject({
+				success: false,
+				error: { code: 'HANDLER_NOT_CONFIGURED' },
+			});
+			expect(result._agentHints).toBeDefined();
+		});
+
+		it('rejects primitive tool input before command execution', async () => {
+			await expect(
+				executeTool(createToolRegistry(), 'scenario-coverage', 'known-command')
+			).rejects.toThrow('Input must be an object');
+		});
+
+		it.each([
+			['scenario-coverage', {}, 'knownCommands'],
+			['scenario-create', { name: 'Missing job' }, 'job'],
+			['scenario-suggest', {}, 'context'],
+		] as const)('requires declared input for %s', async (tool, input, missingField) => {
+			await expect(executeTool(createToolRegistry(), tool, input)).rejects.toThrow(
+				`Missing required field: ${missingField}`
+			);
+		});
+
+		it('executes registry handlers for valid create and suggest inputs', async () => {
+			const registry = createToolRegistry();
+			const directory = mkdtempSync(join(tmpdir(), 'afd-mcp-tools-'));
+
+			try {
+				const created = await executeTool(registry, 'scenario-create', {
+					name: 'Create item',
+					job: 'item-create',
+					directory,
+				});
+				const suggested = await executeTool(registry, 'scenario-suggest', {
+					context: 'command',
+					command: 'item-create',
+				});
+
+				expect(created.success).toBe(true);
+				expect(suggested.success).toBe(true);
+			} finally {
+				rmSync(directory, { recursive: true, force: true });
+			}
 		});
 	});
 

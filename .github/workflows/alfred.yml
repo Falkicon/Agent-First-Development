@@ -1,0 +1,51 @@
+name: Alfred
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'alfred/**'
+      - '.github/workflows/alfred.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'alfred/**'
+      - '.github/workflows/alfred.yml'
+
+jobs:
+  test-and-package:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: alfred
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install development environment
+        run: uv sync --all-extras --dev --frozen
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test
+        run: uv run pytest tests/ -v
+
+      - name: Build wheel
+        run: uv build
+
+      - name: Smoke-test base wheel
+        run: |
+          python -m venv .wheel-smoke
+          uv pip install --python .wheel-smoke/bin/python dist/*.whl
+          .wheel-smoke/bin/alfred --version

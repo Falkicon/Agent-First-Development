@@ -60,7 +60,7 @@ impl<T> BatchCommand<T> {
 }
 
 /// Options for batch execution.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOptions {
     /// Continue executing remaining commands if one fails.
@@ -78,17 +78,6 @@ pub struct BatchOptions {
     /// Stop batch if this many commands fail.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_failures: Option<usize>,
-}
-
-impl Default for BatchOptions {
-    fn default() -> Self {
-        Self {
-            continue_on_error: false,
-            max_concurrency: None,
-            timeout_ms: None,
-            max_failures: None,
-        }
-    }
 }
 
 /// A batch request containing multiple commands.
@@ -249,7 +238,7 @@ pub struct BatchTiming {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchResult<T = serde_json::Value> {
-    /// Whether all commands succeeded.
+    /// Whether the batch operation completed, independent of command failures.
     pub success: bool,
 
     /// Results for each command.
@@ -288,7 +277,18 @@ pub fn create_batch_result<T>(
 ) -> BatchResult<T> {
     let total = results.len();
     let succeeded = results.iter().filter(|r| r.result.success).count();
-    let failed = total - succeeded;
+    let skipped = results
+        .iter()
+        .filter(|result| {
+            result
+                .result
+                .error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                == Some("COMMAND_SKIPPED")
+        })
+        .count();
+    let failed = total - succeeded - skipped;
 
     // Calculate average confidence from successful results
     let confidences: Vec<f64> = results
@@ -332,13 +332,13 @@ pub fn create_batch_result<T>(
         .collect();
 
     BatchResult {
-        success: failed == 0,
+        success: true,
         results,
         summary: BatchSummary {
             total,
             succeeded,
             failed,
-            skipped: 0,
+            skipped,
             average_confidence,
         },
         timing: BatchTiming {
@@ -473,6 +473,27 @@ mod tests {
         assert_eq!(batch_result.summary.total, 2);
         assert_eq!(batch_result.summary.succeeded, 2);
         assert_eq!(batch_result.summary.failed, 0);
+    }
+
+    #[test]
+    fn test_completed_batch_separates_failures_and_skips() {
+        let failed: CommandResult<String> =
+            crate::result::failure(CommandError::new("FAIL", "failed"));
+        let skipped: CommandResult<String> =
+            crate::result::failure(CommandError::new("COMMAND_SKIPPED", "skipped"));
+        let batch_result = create_batch_result(
+            vec![
+                BatchCommandResult::success("one", "cmd-one", failed),
+                BatchCommandResult::success("two", "cmd-two", skipped),
+            ],
+            "2025-01-01T00:00:00Z",
+            "2025-01-01T00:00:01Z",
+            1000,
+        );
+
+        assert!(batch_result.success);
+        assert_eq!(batch_result.summary.failed, 1);
+        assert_eq!(batch_result.summary.skipped, 1);
     }
 
     #[test]

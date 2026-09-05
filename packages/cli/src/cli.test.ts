@@ -10,15 +10,24 @@
 
 import type { CommandResult } from '@lushly-dev/afd-core';
 import { describe, expect, it, vi } from 'vitest';
+import packageJson from '../package.json';
 import { createCli } from './cli.js';
-import { printResult, printTools } from './output.js';
+import {
+	printError,
+	printInfo,
+	printResult,
+	printStatus,
+	printSuccess,
+	printTools,
+	printWarning,
+} from './output.js';
 
 describe('CLI program', () => {
 	it('creates program with correct name and version', () => {
 		const program = createCli();
 
 		expect(program.name()).toBe('afd');
-		expect(program.version()).toBeDefined();
+		expect(program.version()).toBe(packageJson.version);
 	});
 
 	it('registers all expected commands', () => {
@@ -51,6 +60,11 @@ describe('CLI program', () => {
 
 		expect(callCmd).toBeDefined();
 		expect(callCmd?.description()).toBeTruthy();
+		const options = callCmd?.options.map((option) => option.long);
+		expect(options).toContain('--connect');
+		expect(options).toContain('--format');
+		expect(options).not.toContain('--json');
+		expect(options).not.toContain('--input');
 	});
 
 	it('tools command has format option', () => {
@@ -212,5 +226,56 @@ describe('Output formatting', () => {
 
 			logSpy.mockRestore();
 		});
+	});
+
+	it('prints verbose provenance and all confidence ranges', () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		printResult(
+			{
+				success: true,
+				data: 'done',
+				confidence: 0.6,
+				reasoning: 'matched records',
+				sources: [{ type: 'database', title: 'Primary', location: 'rows/1' }, { type: 'api' }],
+			},
+			{ verbose: true }
+		);
+		printResult({ success: true, data: 'low', confidence: 0.2 });
+		printResult(
+			{
+				success: false,
+				error: {
+					code: 'RETRY',
+					message: 'temporary',
+					retryable: true,
+					details: { attempt: 2 },
+				},
+			},
+			{ verbose: true }
+		);
+
+		const output = logSpy.mock.calls.flat().join('\n');
+		expect(output).toContain('matched records');
+		expect(output).toContain('Primary');
+		expect(output).toContain('20%');
+		expect(output).toContain('attempt');
+	});
+
+	it('prints connection variants and message helpers', () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+		printStatus({ connected: true, url: 'http://test/mcp', serverName: 'afd' });
+		printStatus({ connected: true, serverName: 'afd', serverVersion: '2' });
+		printStatus({ connected: false });
+		printError('outer', new Error('inner'));
+		printError('same', new Error('same'));
+		printSuccess('saved');
+		printInfo('working');
+		printWarning('careful');
+
+		expect(logSpy.mock.calls.flat().join('\n')).toContain('afd v?');
+		expect(errorSpy.mock.calls.flat().join('\n')).toContain('inner');
 	});
 });
