@@ -153,10 +153,12 @@ const failingCommand = defineCommand({
 // ═══════════════════════════════════════════════════════════
 
 const registry = createCommandRegistry();
-const commands = [userGet, orderList, orderSummarize, discountApply, slowCommand, failingCommand];
-for (const cmd of commands) {
-	registry.register(cmd.toCommandDefinition());
-}
+registry.register(userGet.toCommandDefinition());
+registry.register(orderList.toCommandDefinition());
+registry.register(orderSummarize.toCommandDefinition());
+registry.register(discountApply.toCommandDefinition());
+registry.register(slowCommand.toCommandDefinition());
+registry.register(failingCommand.toCommandDefinition());
 
 // Adapt core CommandRegistry to DirectRegistry interface
 const directRegistry: DirectRegistry = {

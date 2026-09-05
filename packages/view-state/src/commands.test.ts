@@ -12,6 +12,9 @@ function createHandler(
 		set: (partial: Partial<Record<string, unknown>>) => {
 			Object.assign(obj.state, partial);
 		},
+		replace: (state: Record<string, unknown>) => {
+			obj.state = { ...state };
+		},
 	};
 	return obj;
 }
@@ -67,7 +70,7 @@ describe('createViewStateCommands', () => {
 			registry.register('panel', createHandler({ open: false }));
 			const result = await set.handler({ id: 'panel', state: { open: true } }, {} as never);
 			expect(result.undoCommand).toBe('view-state-set');
-			expect(result.undoArgs).toEqual({ id: 'panel', state: { open: false } });
+			expect(result.undoArgs).toEqual({ id: 'panel', state: { open: false }, replace: true });
 		});
 
 		it('returns failure for unknown ID', async () => {
@@ -84,9 +87,70 @@ describe('createViewStateCommands', () => {
 			expect(registry.get('panel')).toEqual({ open: true, tab: 'design' });
 
 			// Undo
-			const undoArgs = setResult.undoArgs as { id: string; state: Record<string, unknown> };
+			const undoArgs = setResult.undoArgs as {
+				id: string;
+				state: Record<string, unknown>;
+				replace: boolean;
+			};
+			expect(undoArgs.replace).toBe(true);
 			await set.handler(undoArgs, {} as never);
 			expect(registry.get('panel')).toEqual({ open: false, tab: 'design' });
+		});
+
+		it('restores added and nested keys through replacement undo', async () => {
+			registry.register(
+				'panel',
+				createHandler({ open: false, options: { theme: 'light', density: 'compact' } })
+			);
+
+			const setResult = await set.handler(
+				{
+					id: 'panel',
+					state: { temporary: true, options: { theme: 'dark' } },
+				},
+				{} as never
+			);
+			expect(registry.get('panel')).toEqual({
+				open: false,
+				temporary: true,
+				options: { theme: 'dark' },
+			});
+
+			await set.handler(setResult.undoArgs, {} as never);
+			expect(registry.get('panel')).toEqual({
+				open: false,
+				options: { theme: 'light', density: 'compact' },
+			});
+		});
+
+		it('does not advertise undo for a legacy partial-only handler', async () => {
+			const handler: ViewStateHandler = {
+				get: () => ({ open: false }),
+				set: () => {},
+			};
+			registry.register('legacy-panel', handler);
+
+			const result = await set.handler(
+				{ id: 'legacy-panel', state: { temporary: true } },
+				{} as never
+			);
+			expect(result.undoCommand).toBeUndefined();
+			expect(result.undoArgs).toBeUndefined();
+			expect(result.warnings?.[0]?.code).toBe('VIEW_STATE_UNDO_UNAVAILABLE');
+		});
+
+		it('rejects explicit replacement for a legacy partial-only handler', async () => {
+			registry.register('legacy-panel', {
+				get: () => ({ open: false }),
+				set: () => {},
+			});
+
+			const result = await set.handler(
+				{ id: 'legacy-panel', state: { open: true }, replace: true },
+				{} as never
+			);
+			expect(result.success).toBe(false);
+			expect(result.error?.code).toBe('VIEW_STATE_REPLACE_UNSUPPORTED');
 		});
 
 		it('has correct command metadata', () => {

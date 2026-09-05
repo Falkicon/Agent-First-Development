@@ -15,11 +15,11 @@
 	"dependencies": {
 		"@lushly-dev/afd-core": "workspace:*",
 		"@lushly-dev/afd-server": "workspace:*",
-		"zod": "^4.0.0"
+		"zod": "^4.5.4"
 	},
 	"devDependencies": {
-		"tsx": "^4.21.0",
+		"tsx": "^4.23.13",
 		"typescript": "^5.9.3",
-		"vitest": "^4.1.0"
+		"vitest": "^4.1.11"
 	}
 }

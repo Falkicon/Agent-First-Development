@@ -29,6 +29,7 @@ interface StatusResult {
 export const chatStatus = defineCommand<typeof inputSchema, StatusResult>({
 	name: 'chat-status',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'Get status of a chat session',
 	tags: ['chat', 'read'],
 	mutation: false,

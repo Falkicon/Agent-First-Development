@@ -41,13 +41,19 @@ export class ConformanceRunner {
 		for (const test of spec.tests as TestCase[]) {
 			try {
 				// 1. Reset state (Clear all)
-				await this.callTool('todo.clear', { all: true });
+				const reset = await this.callTool('todo-clear', { all: true });
+				if (!reset.success) {
+					throw new Error(reset.error?.message ?? 'Failed to reset Todo state');
+				}
 				this.captured = {};
 
 				// 2. Run setup
 				for (const step of test.setup) {
 					const input = this.resolveVariables(step.input);
 					const result = await this.callTool(step.command, input);
+					if (!result.success) {
+						throw new Error(result.error?.message ?? `Setup command ${step.command} failed`);
+					}
 					if (step.capture) {
 						this.captured[step.capture] = result.data;
 					}

@@ -1,5 +1,7 @@
 """Tests for MCP tool strategies, routed built-ins, and context scoping."""
 
+import asyncio
+
 import pytest
 from pydantic import BaseModel
 
@@ -192,6 +194,45 @@ class TestBuiltInRoutedTools:
         assert len(result.results) == 2
         assert result.results[0].result.data.total == 4
         assert result.results[1].result.data.total == 6
+
+    @pytest.mark.asyncio
+    async def test_afd_batch_bounds_parallelism_and_preserves_order(self):
+        server = create_server("test-app", tool_strategy="lazy")
+        active = 0
+        peak = 0
+
+        @server.command(
+            name="work-run",
+            description="Run controlled work",
+            input_schema=MathInput,
+            expose=ExposeOptions(mcp=True),
+        )
+        async def work_run(input: MathInput):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.01)
+            active -= 1
+            return success({"value": input.value})
+
+        result = await server.call_tool(
+            "afd-batch",
+            {
+                "commands": [
+                    {"id": f"request-{value}", "command": "work-run", "input": {"value": value}}
+                    for value in range(4)
+                ],
+                "options": {"parallelism": 2},
+            },
+        )
+
+        assert peak == 2
+        assert [item.id for item in result.results] == [
+            "request-0",
+            "request-1",
+            "request-2",
+            "request-3",
+        ]
 
     @pytest.mark.asyncio
     async def test_afd_pipe_executes_pipeline(self):

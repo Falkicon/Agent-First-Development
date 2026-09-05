@@ -408,8 +408,13 @@ async def toggle_batch(input: BatchToggleInput) -> CommandResult[Dict[str, Any]]
 # Main Entry Point
 # ==============================================================================
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the Todo MCP server."""
     import logging
     import sys
     logging.basicConfig(stream=sys.stderr, level=logging.INFO)
     server.run()
+
+
+if __name__ == "__main__":
+    main()

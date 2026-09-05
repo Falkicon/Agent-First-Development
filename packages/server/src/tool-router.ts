@@ -13,7 +13,7 @@ import type {
 	PipelineRequest,
 	PipelineResult,
 } from '@lushly-dev/afd-core';
-import { findSimilarTools, isBatchRequest, isPipelineRequest } from '@lushly-dev/afd-core';
+import { failure, findSimilarTools, isBatchRequest, isPipelineRequest } from '@lushly-dev/afd-core';
 import type { DetailInput, DiscoverInput } from './lazy-tools.js';
 import { executeDetail, executeDiscover } from './lazy-tools.js';
 import type { ZodCommandDefinition } from './schema.js';
@@ -243,7 +243,26 @@ export function createToolRouter(deps: ToolRouterDeps) {
 		// Handle built-in afd-pipe tool
 		if (toolName === 'afd-pipe') {
 			if (!isPipelineRequest(args)) {
-				return resultContent(emptyPipelineResult, true);
+				return resultContent(
+					{
+						...emptyPipelineResult,
+						steps: [
+							{
+								index: -1,
+								command: '',
+								status: 'failure',
+								executionTimeMs: 0,
+								error: {
+									code: 'INVALID_PIPELINE_REQUEST',
+									message: 'Invalid pipeline request envelope',
+									suggestion:
+										'Provide steps with nonempty command names, object inputs, valid conditions, and correctly typed options',
+								},
+							},
+						],
+					},
+					true
+				);
 			}
 			const result = await executePipeline(args, {
 				traceId: `pipeline-${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -265,7 +284,26 @@ export function createToolRouter(deps: ToolRouterDeps) {
 			}
 
 			if (action && typeof action === 'string') {
-				const actualCommandName = `${toolName}-${action}`;
+				const candidates = commands.filter((command) => {
+					const group = groupByFn
+						? groupByFn(command) || 'general'
+						: command.category || command.name.split('-')[0] || 'general';
+					const parts = command.name.split('-');
+					const commandAction = parts.length > 1 ? parts.slice(1).join('-') : command.name;
+					return group === toolName && commandAction === action;
+				});
+				if (candidates.length !== 1) {
+					return resultContent(
+						failure({
+							code: candidates.length ? 'AMBIGUOUS_ACTION' : 'COMMAND_NOT_FOUND',
+							message: `Action '${action}' does not identify one command in group '${toolName}'`,
+							suggestion:
+								'Use afd-call with the full command name, or list tools to find a valid action.',
+						}),
+						true
+					);
+				}
+				const actualCommandName = candidates[0]?.name as string;
 
 				// Context check for grouped strategy
 				if (contextState) {
@@ -299,10 +337,10 @@ export function createToolRouter(deps: ToolRouterDeps) {
 				c.category || c.name.split('-')[0] || 'general';
 			const getGroup = groupByFn || defaultGroupFn;
 
-			const groupNames = new Set(commands.map((cmd) => getGroup(cmd)));
+			const groupNames = new Set(commands.map((cmd) => getGroup(cmd) || 'general'));
 
 			if (groupNames.has(toolName)) {
-				const groupCommands = commands.filter((cmd) => getGroup(cmd) === toolName);
+				const groupCommands = commands.filter((cmd) => (getGroup(cmd) || 'general') === toolName);
 				const availableActions = groupCommands.map((cmd) => {
 					const parts = cmd.name.split('-');
 					return parts.length > 1 ? parts.slice(1).join('-') : cmd.name;

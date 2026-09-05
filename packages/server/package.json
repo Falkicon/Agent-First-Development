@@ -24,14 +24,14 @@
 	},
 	"dependencies": {
 		"@lushly-dev/afd-core": "workspace:*",
-		"@modelcontextprotocol/sdk": "^1.27.1",
-		"zod": "^4.0.0"
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"zod": "^4.5.4"
 	},
 	"devDependencies": {
 		"@lushly-dev/afd-client": "workspace:*",
-		"@vitest/coverage-v8": "^4.1.0",
+		"@vitest/coverage-v8": "^4.1.11",
 		"typescript": "^5.9.3",
-		"vitest": "^4.1.0"
+		"vitest": "^4.1.11"
 	},
 	"keywords": [
 		"afd",

@@ -27,6 +27,7 @@ interface RoomsResult {
 export const chatRooms = defineCommand<typeof inputSchema, RoomsResult>({
 	name: 'chat-rooms',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'List available chat rooms',
 	tags: ['chat', 'read'],
 	mutation: false,

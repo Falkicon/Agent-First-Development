@@ -52,6 +52,9 @@ afd call document.analyze id=doc-123 --verbose
 
 # Output as JSON
 afd call document.list --format json
+
+# Use another server for one call without replacing the saved connection
+afd call document.list --connect http://localhost:3200/mcp --transport http --format json
 ```
 
 ### Validate Commands
@@ -131,6 +134,9 @@ afd:connected> exit
 
 | Option | Description |
 |--------|-------------|
+| `--connect <url>` | Use a server URL for this call only |
+| `--transport <type>` | Transport for `--connect` (sse, http). Default: http |
+| `--timeout <ms>` | Connection timeout for this call |
 | `-f, --format <format>` | Output format (json, text). Default: text |
 | `-v, --verbose` | Show detailed output |
 
@@ -154,9 +160,15 @@ The CLI stores configuration in `~/.config/afd-cli/config.json` (Linux/Mac) or `
 
 Stored settings:
 - `serverUrl`: Last connected server URL
+- `transport`: Last selected transport (`sse` or `http`)
 - `timeout`: Default timeout
+- `autoReconnect`: Whether the saved connection enables automatic reconnection
 - `format`: Default output format
 - `debug`: Debug mode
+
+`tools`, `call`, `batch`, `stream`, `validate`, and `status` recreate this
+connection when they run in a later process. `disconnect` removes the saved
+connection.
 
 ## Output Formats
 

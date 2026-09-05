@@ -69,6 +69,12 @@ let json = serde_json::to_string(&result).unwrap();
 - `native` (default) - Native async runtime with Tokio
 - `wasm` - WebAssembly target support
 
+Batch and pipeline deadlines (`timeoutMs`) require `native` and a Tokio runtime
+with time enabled. Builds without `native` reject deadline options with
+`UNSUPPORTED_OPTION` before invoking any command. Execution without a deadline
+remains available. Parallel pipelines are currently rejected in every build;
+batch concurrency is supported through `maxConcurrency`.
+
 ## License
 
 MIT

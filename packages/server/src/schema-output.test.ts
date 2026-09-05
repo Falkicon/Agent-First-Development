@@ -24,6 +24,7 @@ describe('defineCommand output schema', () => {
 	it('stores output schema on ZodCommandDefinition', () => {
 		const Todo = z.object({ id: z.string(), title: z.string(), done: z.boolean() });
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-list',
 			description: 'Lists all todo items',
 			input: z.object({ filter: z.enum(['all', 'active', 'done']).optional() }),
@@ -37,6 +38,7 @@ describe('defineCommand output schema', () => {
 
 	it('populates returns via toCommandDefinition()', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-get',
 			description: 'Gets a single todo',
 			input: z.object({ id: z.string() }),
@@ -52,6 +54,7 @@ describe('defineCommand output schema', () => {
 
 	it('uses placeholder when no output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-delete',
 			description: 'Deletes a todo',
 			input: z.object({ id: z.string() }),
@@ -65,7 +68,9 @@ describe('defineCommand output schema', () => {
 
 	it('includes outputSchema in MCP _meta', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-list',
+			category: 'inventory',
 			description: 'Lists all todos',
 			input: z.object({}),
 			output: z.object({ id: z.string() }).array(),
@@ -73,12 +78,14 @@ describe('defineCommand output schema', () => {
 		});
 		const tools = getToolsList([cmd], 'individual');
 		const tool = tools.find((t) => t.name === 'todo-list');
+		expect(tool?._meta?.category).toBe('inventory');
 		expect(tool?._meta?.outputSchema).toBeDefined();
 		expect(tool?._meta?.outputSchema?.type).toBe('array');
 	});
 
 	it('handles complex nested output schemas', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-stats',
 			description: 'Gets todo statistics',
 			input: z.object({}),
@@ -100,6 +107,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles discriminated union output schemas', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'auth-check',
 			description: 'Checks authentication status',
 			input: z.object({}),
@@ -121,6 +129,7 @@ describe('defineCommand output schema', () => {
 
 	it('does not emit _meta when only outputJsonSchema is absent', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-ping',
 			description: 'Pings the server',
 			input: z.object({}),
@@ -138,6 +147,7 @@ describe('defineCommand output schema', () => {
 	// would be caught by TypeScript, not runtime tests.
 	it('accepts output schema with matching handler type', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-count',
 			description: 'Counts todos',
 			input: z.object({}),
@@ -149,6 +159,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles scalar string output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-name',
 			description: 'Gets todo name',
 			input: z.object({ id: z.string() }),
@@ -162,6 +173,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles boolean output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-exists',
 			description: 'Checks if todo exists',
 			input: z.object({ id: z.string() }),
@@ -173,6 +185,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles enum output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-status',
 			description: 'Gets todo status',
 			input: z.object({ id: z.string() }),
@@ -185,6 +198,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles nullable output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-find',
 			description: 'Finds a todo or returns null',
 			input: z.object({ query: z.string() }),
@@ -203,6 +217,7 @@ describe('defineCommand output schema', () => {
 
 	it('handles empty object output schema', () => {
 		const cmd = defineCommand({
+			expose: { mcp: true },
 			name: 'todo-clear',
 			description: 'Clears all todos',
 			input: z.object({}),

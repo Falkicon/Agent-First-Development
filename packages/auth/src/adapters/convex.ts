@@ -33,19 +33,30 @@ export function useConvexAuthAdapter(options: ConvexAuthAdapterOptions): AuthAda
 
 	const listenersRef = useRef(new Set<(state: AuthSessionState) => void>());
 	const stateRef = useRef<AuthSessionState>(LOADING);
+	const notifiedStateRef = useRef<AuthSessionState>(LOADING);
 
-	// Derive current state
-	let currentState: AuthSessionState;
+	// Derive a state while retaining the previous object when its meaningful
+	// values are unchanged. Auth hooks may rerender for unrelated Convex data,
+	// and useSyncExternalStore requires a cached snapshot in that case.
+	const previousState = stateRef.current;
+	let nextState: AuthSessionState;
 	if (isLoading) {
-		currentState = LOADING;
+		nextState = LOADING;
 	} else if (isAuthenticated && me) {
-		currentState = {
+		const previousSession =
+			previousState.status === 'authenticated' && previousState.user.id === me.id
+				? previousState.session
+				: {
+						id: `convex-${me.id}`,
+						expiresAt: new Date(Date.now() + 86_400_000), // Synthetic — 24h
+					};
+		nextState = {
 			status: 'authenticated',
-			session: {
-				id: `convex-${me.id}`,
-				expiresAt: new Date(Date.now() + 86_400_000), // Synthetic — 24h
-			},
-			user: me,
+			session: previousSession,
+			user:
+				previousState.status === 'authenticated' && areUsersEqual(previousState.user, me)
+					? previousState.user
+					: me,
 		};
 		if (typeof process !== 'undefined' && process.env?.NODE_ENV === 'development') {
 			// Dev-only warning for synthetic expiresAt
@@ -54,16 +65,15 @@ export function useConvexAuthAdapter(options: ConvexAuthAdapterOptions): AuthAda
 			);
 		}
 	} else {
-		currentState = UNAUTHENTICATED;
+		nextState = UNAUTHENTICATED;
 	}
 
-	// Notify listeners on state change
-	const prevStatusRef = useRef(stateRef.current.status);
+	const currentState = areSessionStatesEqual(previousState, nextState) ? previousState : nextState;
 	stateRef.current = currentState;
 
 	useEffect(() => {
-		if (prevStatusRef.current !== currentState.status) {
-			prevStatusRef.current = currentState.status;
+		if (!areSessionStatesEqual(notifiedStateRef.current, currentState)) {
+			notifiedStateRef.current = currentState;
 			for (const listener of listenersRef.current) {
 				listener(currentState);
 			}
@@ -102,4 +112,24 @@ export function useConvexAuthAdapter(options: ConvexAuthAdapterOptions): AuthAda
 	);
 
 	return { signIn, signOut, getSession, onAuthStateChange };
+}
+
+function areUsersEqual(left: User, right: User): boolean {
+	return (
+		left.id === right.id &&
+		left.email === right.email &&
+		left.name === right.name &&
+		left.image === right.image
+	);
+}
+
+function areSessionStatesEqual(left: AuthSessionState, right: AuthSessionState): boolean {
+	if (left.status !== right.status) return false;
+	if (left.status !== 'authenticated' || right.status !== 'authenticated') return true;
+
+	return (
+		left.session.id === right.session.id &&
+		left.session.expiresAt.getTime() === right.session.expiresAt.getTime() &&
+		areUsersEqual(left.user, right.user)
+	);
 }

@@ -6,13 +6,9 @@
 
 export type { BetterAuthAdapterOptions } from './adapters/better-auth.js';
 export { BetterAuthAdapter } from './adapters/better-auth.js';
-export type { ConvexAuthAdapterOptions } from './adapters/convex.js';
-export { useConvexAuthAdapter } from './adapters/convex.js';
 export type { MockAuthAdapterOptions } from './adapters/mock.js';
 // Adapters
 export { MockAuthAdapter } from './adapters/mock.js';
-// Commands
-export { createAuthCommands } from './commands.js';
 // Errors
 export type { AuthErrorCode } from './errors.js';
 export { AuthAdapterError } from './errors.js';

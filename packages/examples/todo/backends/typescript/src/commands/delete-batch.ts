@@ -48,6 +48,7 @@ export const deleteBatch = defineCommand<typeof inputSchema, BatchDeleteResult>(
 	name: 'todo-delete-batch',
 	description: 'Delete multiple todos at once',
 	category: 'todo',
+	expose: { mcp: true },
 	tags: ['todo', 'delete', 'write', 'batch', 'destructive'],
 	mutation: true,
 	version: '1.0.0',

@@ -15,6 +15,7 @@ import { createMcpServer, isStdinPiped, type McpServer } from './server.js';
 
 // Simple test command
 const testCommand = defineCommand({
+	expose: { mcp: true },
 	name: 'test-echo',
 	description: 'Echo the input',
 	category: 'test',
@@ -185,6 +186,7 @@ describe('Command definition passthrough', () => {
 
 	it('emits _meta with requires and mutation when present', () => {
 		const cmdWithMeta = defineCommand({
+			expose: { mcp: true },
 			name: 'test-protected',
 			description: 'A protected command',
 			category: 'test',
@@ -211,6 +213,7 @@ describe('Command definition passthrough', () => {
 
 	it('command without requires or mutation has no _meta fields', () => {
 		const plainCmd = defineCommand({
+			expose: { mcp: true },
 			name: 'test-plain',
 			description: 'A plain command',
 			category: 'test',
@@ -235,6 +238,7 @@ describe('Command definition passthrough', () => {
 
 	it('empty requires array does not surface on command definition', () => {
 		const cmdEmptyReq = defineCommand({
+			expose: { mcp: true },
 			name: 'test-empty-req',
 			description: 'A command with empty requires',
 			category: 'test',

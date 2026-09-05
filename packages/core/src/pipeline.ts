@@ -1,13 +1,5 @@
-/**
- * @fileoverview Pipeline types for chaining AFD commands
- *
- * Pipelines enable declarative composition of commands where the output of one
- * becomes the input of the next. Key features:
- * - Variable resolution ($prev, $first, $steps[n], $steps.alias)
- * - Conditional execution with when clauses
- * - Trust signal propagation (confidence, reasoning, sources)
- * - Error propagation with actionable suggestions
- */
+// afd-override: max-lines=1000 — canonical shared pipeline types and resolution helpers
+/** Pipeline types for chaining AFD commands. */
 
 import type { CommandError } from './errors.js';
 import type { Alternative, Source, Warning } from './metadata.js';
@@ -18,21 +10,7 @@ import type { StreamChunk } from './streaming.js';
 // PIPELINE REQUEST TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Request to execute a pipeline of chained commands.
- *
- * @example
- * ```typescript
- * const request: PipelineRequest = {
- *   id: 'my-pipeline',
- *   steps: [
- *     { command: 'user-get', input: { id: 123 }, as: 'user' },
- *     { command: 'order-list', input: { userId: '$prev.id' } },
- *   ],
- *   options: { timeoutMs: 30000 }
- * };
- * ```
- */
+/** Request to execute a pipeline of chained commands. */
 export interface PipelineRequest {
 	/**
 	 * Unique identifier for the pipeline execution.
@@ -52,19 +30,7 @@ export interface PipelineRequest {
 	options?: PipelineOptions;
 }
 
-/**
- * A single step in a pipeline.
- *
- * @example
- * ```typescript
- * const step: PipelineStep = {
- *   command: 'order-list',
- *   input: { userId: '$prev.id', status: 'active' },
- *   as: 'orders',
- *   when: { $exists: '$prev.id' }
- * };
- * ```
- */
+/** A single step in a pipeline. */
 export interface PipelineStep {
 	/**
 	 * Command name to execute.
@@ -121,13 +87,14 @@ export interface PipelineOptions {
 
 	/**
 	 * Timeout for entire pipeline in milliseconds.
+	 * Cancellation is cooperative: handlers that ignore the abort signal may
+	 * continue running and may still produce side effects after timeout.
 	 */
 	timeoutMs?: number;
 
 	/**
-	 * Execute steps in parallel where dependencies allow.
-	 *
-	 * Steps that don't reference $prev can potentially run in parallel.
+	 * Reserved for dependency-aware parallel execution. Currently rejected with
+	 * `UNSUPPORTED_OPTION` when true.
 	 */
 	parallel?: boolean;
 
@@ -144,31 +111,7 @@ export interface PipelineOptions {
 // PIPELINE CONDITION TYPES
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/**
- * Conditional expression for pipeline steps.
- *
- * Supports existence checks, comparisons, and logical combinations.
- *
- * @example
- * ```typescript
- * // Check if field exists
- * const exists: PipelineCondition = { $exists: '$prev.email' };
- *
- * // Check equality
- * const isPremium: PipelineCondition = { $eq: ['$steps.user.tier', 'premium'] };
- *
- * // Numeric comparison
- * const hasItems: PipelineCondition = { $gt: ['$prev.items.length', 0] };
- *
- * // Logical combination
- * const complex: PipelineCondition = {
- *   $and: [
- *     { $exists: '$prev.userId' },
- *     { $eq: ['$steps.user.active', true] }
- *   ]
- * };
- * ```
- */
+/** Conditional expression for existence, comparison, and logical checks. */
 export type PipelineCondition =
 	| PipelineConditionExists
 	| PipelineConditionEq
@@ -525,27 +468,7 @@ export interface PipelineContext {
 /**
  * Type guard to check if a value is a PipelineRequest.
  */
-export function isPipelineRequest(value: unknown): value is PipelineRequest {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		'steps' in value &&
-		Array.isArray((value as PipelineRequest).steps) &&
-		(value as PipelineRequest).steps.every(isPipelineStep)
-	);
-}
-
-/**
- * Type guard to check if a value is a PipelineStep.
- */
-export function isPipelineStep(value: unknown): value is PipelineStep {
-	return (
-		typeof value === 'object' &&
-		value !== null &&
-		'command' in value &&
-		typeof (value as PipelineStep).command === 'string'
-	);
-}
+export { isPipelineRequest, isPipelineStep } from './request-validation.js';
 
 /**
  * Type guard to check if a value is a PipelineResult.

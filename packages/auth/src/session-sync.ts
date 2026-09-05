@@ -32,6 +32,19 @@ const DEFAULTS: Required<SessionSyncOptions> = {
 	visibilityRefreshMs: 300_000,
 };
 
+interface RefreshLockRecord {
+	ownerId: string;
+	lockId: string;
+	timestamp: number;
+}
+
+interface StorageRead<T> {
+	available: boolean;
+	value: T | null;
+}
+
+let ownerSequence = 0;
+
 export class SessionSync {
 	private readonly options: Required<SessionSyncOptions>;
 	private channel: BroadcastChannel | null = null;
@@ -41,6 +54,8 @@ export class SessionSync {
 	private visibilityHandler: (() => void) | null = null;
 	private storageHandler: ((e: StorageEvent) => void) | null = null;
 	private disposed = false;
+	private readonly ownerId = createOwnerId();
+	private heldLockId: string | null = null;
 
 	constructor(options: SessionSyncOptions = {}) {
 		this.options = { ...DEFAULTS, ...options };
@@ -82,34 +97,75 @@ export class SessionSync {
 	 * Returns true if lock was acquired, false if another tab holds it.
 	 */
 	acquireRefreshLock(): boolean {
+		if (this.disposed) return false;
 		if (!this.hasLocalStorage()) return true;
 
 		const now = Date.now();
-		const existing = localStorage.getItem(this.options.lockKey);
+		const existing = this.readRefreshLock();
+		if (!existing.available) return true;
 
-		if (existing) {
-			const timestamp = Number.parseInt(existing, 10);
-			if (now - timestamp < this.options.lockTimeoutMs) {
-				return false; // Another tab holds a valid lock
-			}
+		if (existing.value && now - existing.value.timestamp < this.options.lockTimeoutMs) {
+			return false; // Another tab holds a valid lock
 		}
 
-		localStorage.setItem(this.options.lockKey, String(now));
-		return true;
+		const lockId = createLockId();
+		const lock: RefreshLockRecord = { ownerId: this.ownerId, lockId, timestamp: now };
+		try {
+			localStorage.setItem(this.options.lockKey, JSON.stringify(lock));
+		} catch {
+			// Storage can be present but denied (private browsing, blocked cookies,
+			// quota). Proceed without coordination rather than failing auth refresh.
+			this.heldLockId = null;
+			return true;
+		}
+
+		// localStorage has no compare-and-swap. The immediate read makes the
+		// synchronous fallback best-effort: if another tab won the write race,
+		// this instance declines the lock. It cannot make the operation atomic.
+		const observed = this.readRefreshLock();
+		if (
+			observed.available &&
+			observed.value?.ownerId === this.ownerId &&
+			observed.value.lockId === lockId
+		) {
+			this.heldLockId = lockId;
+			return true;
+		}
+
+		this.heldLockId = null;
+		return false;
 	}
 
 	/**
 	 * Release the refresh lock.
 	 */
 	releaseRefreshLock(): void {
-		if (!this.hasLocalStorage()) return;
-		localStorage.removeItem(this.options.lockKey);
+		const heldLockId = this.heldLockId;
+		this.heldLockId = null;
+		if (!this.hasLocalStorage() || heldLockId === null) return;
+
+		const current = this.readRefreshLock();
+		if (
+			current.available &&
+			current.value?.ownerId === this.ownerId &&
+			current.value.lockId === heldLockId
+		) {
+			try {
+				localStorage.removeItem(this.options.lockKey);
+			} catch {
+				// Storage became unavailable; there is nothing safe to release.
+			}
+		}
+
+		// A stale owner must never retain permission to release a later owner's
+		// lock through this instance.
 	}
 
 	/**
 	 * Clean up all resources.
 	 */
 	dispose(): void {
+		this.releaseRefreshLock();
 		this.disposed = true;
 
 		if (this.debounceTimer !== null) {
@@ -210,4 +266,48 @@ export class SessionSync {
 			return false;
 		}
 	}
+
+	private readRefreshLock(): StorageRead<RefreshLockRecord> {
+		try {
+			const raw = localStorage.getItem(this.options.lockKey);
+			if (!raw) return { available: true, value: null };
+
+			const parsed: unknown = JSON.parse(raw);
+			if (isRefreshLockRecord(parsed)) return { available: true, value: parsed };
+
+			// Read locks written by older versions so they expire normally. A
+			// legacy lock has no owner and therefore cannot be released by us.
+			const timestamp = Number.parseInt(raw, 10);
+			return Number.isFinite(timestamp)
+				? {
+						available: true,
+						value: { ownerId: '', lockId: '', timestamp },
+					}
+				: { available: true, value: null };
+		} catch {
+			return { available: false, value: null };
+		}
+	}
+}
+
+function createOwnerId(): string {
+	ownerSequence += 1;
+	return `afd-auth-${Date.now().toString(36)}-${ownerSequence.toString(36)}-${Math.random()
+		.toString(36)
+		.slice(2)}`;
+}
+
+function createLockId(): string {
+	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function isRefreshLockRecord(value: unknown): value is RefreshLockRecord {
+	if (typeof value !== 'object' || value === null) return false;
+	const record = value as Record<string, unknown>;
+	return (
+		typeof record.ownerId === 'string' &&
+		typeof record.lockId === 'string' &&
+		typeof record.timestamp === 'number' &&
+		Number.isFinite(record.timestamp)
+	);
 }

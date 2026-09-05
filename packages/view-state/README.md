@@ -9,7 +9,7 @@ UI state (panels, sidebars, selections, tool modes) typically lives outside the 
 - **Agents can control layout** — open panels, switch tabs, resize sidebars via commands
 - **Tests express intent** — assert on state, not pixel coordinates
 - **State persists** — reload hydration via `@lushly-dev/local-db`
-- **Undo support** — every `view-state-set` captures previous state
+- **Undo support** — handlers that provide `replace` receive exact undo metadata; legacy partial-only handlers remain compatible but do not advertise reversible undo
 
 ## Installation
 
@@ -29,10 +29,14 @@ const registry = new ViewStateRegistry();
 // Components register their get/set handlers
 registry.register('design-panel', {
   get: () => ({ open: panel.isOpen, tab: panel.activeTab }),
-  set: (s) => {
-    if (s.open !== undefined) panel.isOpen = s.open;
-    if (s.tab !== undefined) panel.activeTab = s.tab;
-  },
+	set: (s) => {
+		if (s.open !== undefined) panel.isOpen = s.open;
+		if (s.tab !== undefined) panel.activeTab = s.tab;
+	},
+	replace: (s) => {
+		panel.isOpen = s.open;
+		panel.activeTab = s.tab;
+	},
 });
 
 // Read and write state
@@ -58,6 +62,15 @@ const server = createMcpServer({
 ```
 
 Commands exposed: `view-state-get`, `view-state-set`, `view-state-list`.
+
+`view-state-set` merges the supplied `state` by default. Set `replace: true`
+to replace the complete state; this requires the registered handler to provide a
+`replace(state)` callback. When replacement is available, successful set
+commands include `undoCommand: 'view-state-set'` and `undoArgs` with
+`replace: true`, which restores the complete previous snapshot including
+removing keys added by the mutation. Legacy handlers with only `set(partial)`
+continue to support partial updates, but their results omit undo metadata and
+include a warning because an exact restoration cannot be guaranteed.
 
 ## Persistence
 
@@ -87,7 +100,8 @@ Without an adapter, the registry works entirely in-memory.
 | `unregister(id)` | Remove a handler. No-op if unknown |
 | `has(id)` | Check if a handler is registered |
 | `get(id)` | Get current state. Returns `null` if not registered |
-| `set(id, partial)` | Apply partial state, returns previous for undo |
+| `set(id, partial)` | Apply partial state, returns a detached previous snapshot |
+| `replace(id, state)` | Replace complete state; requires handler `replace` support |
 | `list()` | List all registered states |
 | `hydrate()` | Load persisted states and apply to handlers |
 | `flush()` | Write all pending persistence immediately |

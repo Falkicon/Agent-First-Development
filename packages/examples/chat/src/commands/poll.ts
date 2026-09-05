@@ -32,6 +32,7 @@ interface PollResult {
 export const chatPoll = defineCommand<typeof inputSchema, PollResult>({
 	name: 'chat-poll',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'Poll for new messages (fallback for agents without WebSocket)',
 	tags: ['chat', 'read', 'agent-friendly'],
 	mutation: false,

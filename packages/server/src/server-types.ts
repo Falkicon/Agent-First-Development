@@ -75,6 +75,15 @@ export interface McpServerOptions {
 	/** Enable CORS for browser access (in production, requires explicit opt-in) */
 	cors?: boolean;
 
+	/** Allowed HTTP Host names (without ports). Defaults to the configured host and loopback names. Set explicitly for proxies and embedded hosts. */
+	allowedHosts?: string[];
+
+	/** Exact additional browser origins. Same-origin requests are allowed by default; devMode permits any origin. */
+	allowedOrigins?: string[];
+
+	/** Maximum request body size in bytes (default: 1048576). */
+	maxBodyBytes?: number;
+
 	/**
 	 * Transport protocol to use.
 	 *
@@ -161,7 +170,11 @@ export type { CommandMiddleware } from '@lushly-dev/afd-core';
 /**
  * Embeddable Node HTTP handler returned by `createMcpHandler()`.
  */
-export type McpHandler = (req: IncomingMessage, res: ServerResponse) => Promise<void>;
+export type McpHandler = {
+	(req: IncomingMessage, res: ServerResponse): Promise<void>;
+	/** Close active SSE/stream responses when the embedding host shuts down. */
+	dispose(): void;
+};
 
 /**
  * MCP Server instance.

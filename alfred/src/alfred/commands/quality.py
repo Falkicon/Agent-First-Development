@@ -5,7 +5,7 @@ description quality: length, imperative mood, near-duplicates.
 """
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from afd.core.result import CommandResult, success

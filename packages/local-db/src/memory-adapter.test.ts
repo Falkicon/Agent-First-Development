@@ -61,6 +61,82 @@ describe('MemoryAdapter', () => {
 			expect(result.data[0]?.value).toBe(30);
 		});
 
+		it('sorts numeric values numerically in both directions', async () => {
+			const db = new MemoryAdapter({
+				items: [
+					{ id: 'two', value: 2 },
+					{ id: 'ten', value: 10 },
+					{ id: 'one', value: 1 },
+				],
+			});
+
+			const ascending = await db.list<{ value: number }>('items', {
+				sort: 'value',
+				order: 'asc',
+			});
+			const descending = await db.list<{ value: number }>('items', {
+				sort: 'value',
+				order: 'desc',
+			});
+
+			expect(ascending.data.map((row) => row.value)).toEqual([1, 2, 10]);
+			expect(descending.data.map((row) => row.value)).toEqual([10, 2, 1]);
+		});
+
+		it('sorts before applying numeric pagination', async () => {
+			const db = new MemoryAdapter({
+				items: [
+					{ id: 'two', rank: 2 },
+					{ id: 'ten', rank: 10 },
+					{ id: 'one', rank: 1 },
+					{ id: 'twenty', rank: 20 },
+				],
+			});
+
+			const result = await db.list<{ rank: number }>('items', {
+				sort: 'rank',
+				order: 'asc',
+				offset: 1,
+				limit: 2,
+			});
+
+			expect(result.data.map((row) => row.rank)).toEqual([2, 10]);
+			expect(result.total).toBe(4);
+		});
+
+		it('sorts null and mixed primitive values deterministically as strings', async () => {
+			const db = new MemoryAdapter({
+				items: [
+					{ id: 'null', value: null },
+					{ id: 'bool', value: false },
+					{ id: 'text', value: 'zebra' },
+				],
+			});
+
+			const result = await db.list<{ id: string }>('items', { sort: 'value' });
+
+			expect(result.data.map((row) => row.id)).toEqual(['null', 'bool', 'text']);
+		});
+
+		it('keeps equal sort values in insertion order', async () => {
+			const db = new MemoryAdapter({
+				items: [
+					{ id: 'first', value: 1 },
+					{ id: 'second', value: 1 },
+				],
+			});
+
+			const result = await db.list<{ id: string }>('items', { sort: 'value' });
+
+			expect(result.data.map((row) => row.id)).toEqual(['first', 'second']);
+		});
+
+		it('ignores undefined filters while applying defined filters', async () => {
+			const result = await adapter.list('items', { type: 'a', owner: undefined });
+
+			expect(result.total).toBe(2);
+		});
+
 		it('returns empty for non-existent table', async () => {
 			const result = await adapter.list('empty');
 			expect(result).toEqual({ data: [], total: 0 });
@@ -129,6 +205,70 @@ describe('MemoryAdapter', () => {
 			const result = await adapter.batch([{ method: 'DELETE', path: '/items/d1' }]);
 			expect(result.summary.success).toBe(1);
 			expect(await adapter.get('items', 'd1')).toBeNull();
+		});
+
+		it('returns list and missing-record responses for GET operations', async () => {
+			await adapter.create('items', { id: 'one' });
+
+			const result = await adapter.batch([
+				{ method: 'GET', path: '/items' },
+				{ method: 'GET', path: '/items/missing' },
+			]);
+
+			expect(result.results).toEqual([
+				{ status: 200, data: { data: [{ id: 'one' }], total: 1 } },
+				{ status: 404, data: null },
+			]);
+			expect(result.summary).toEqual({ total: 2, success: 2, failed: 0 });
+		});
+
+		it.each(['PUT', 'PATCH'] as const)('updates records with %s operations', async (method) => {
+			const result = await adapter.batch([{ method, path: '/items/one', body: { value: method } }]);
+
+			expect(result.results[0]).toEqual({
+				status: 200,
+				data: { id: 'one', value: method },
+			});
+		});
+
+		it('reports unsupported methods without aborting later operations', async () => {
+			const result = await adapter.batch([
+				{ method: 'OPTIONS' as 'GET', path: '/items' },
+				{ method: 'POST', path: '/items', body: { id: 'one' } },
+			]);
+
+			expect(result.results[0]).toEqual({ status: 400, error: 'Unknown method: OPTIONS' });
+			expect(result.summary).toEqual({ total: 2, success: 1, failed: 1 });
+		});
+
+		it('isolates thrown operation errors and continues the batch', async () => {
+			class FailingAdapter extends MemoryAdapter {
+				override async create<T>(table: string, data: Partial<T>): Promise<T> {
+					if (table === 'broken') throw 'write failed';
+					return super.create(table, data);
+				}
+			}
+			const db = new FailingAdapter();
+
+			const result = await db.batch([
+				{ method: 'POST', path: '/broken', body: {} },
+				{ method: 'POST', path: '/items', body: { id: 'one' } },
+			]);
+
+			expect(result.results[0]).toEqual({ status: 500, error: 'write failed' });
+			expect(result.summary).toEqual({ total: 2, success: 1, failed: 1 });
+		});
+
+		it('preserves Error messages when an operation throws an Error object', async () => {
+			class FailingAdapter extends MemoryAdapter {
+				override async remove(): Promise<void> {
+					throw new Error('delete failed');
+				}
+			}
+
+			const result = await new FailingAdapter().batch([{ method: 'DELETE', path: '/items/one' }]);
+
+			expect(result.results[0]).toEqual({ status: 500, error: 'delete failed' });
 		});
 	});
 

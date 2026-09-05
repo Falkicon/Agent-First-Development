@@ -1,50 +1,38 @@
-/**
- * @fileoverview HTTP transport handler — MCP protocol, SSE, and REST endpoints.
- */
-
+/** @fileoverview HTTP transport handler — MCP protocol, SSE, and REST endpoints. */
+import { once } from 'node:events';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type {
 	BatchRequest,
+	BatchResult,
 	CommandContext,
 	CommandResult,
 	StreamChunk,
 } from '@lushly-dev/afd-core';
 import { createErrorChunk, isBatchRequest } from '@lushly-dev/afd-core';
+import {
+	HttpRequestError,
+	type HttpSecurityOptions,
+	readJsonBody,
+	validateHttpRequest,
+} from './http-security.js';
 import type { ToolCallResult } from './tool-router.js';
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// TYPES
-// ═══════════════════════════════════════════════════════════════════════════════
 
 interface SseClient {
 	id: string;
-	response: import('node:http').ServerResponse;
+	response: ServerResponse;
 }
-
 interface McpRequest {
-	jsonrpc: '2.0';
-	id: string | number;
+	jsonrpc?: '2.0';
+	id?: string | number;
 	method: string;
 	params?: unknown;
 }
 
-interface McpResponse {
-	jsonrpc: '2.0';
-	id: string | number;
-	result?: unknown;
-	error?: {
-		code: number;
-		message: string;
-		data?: unknown;
-	};
-}
-
-export interface HttpHandlerDeps {
+export interface HttpHandlerDeps extends HttpSecurityOptions {
 	name: string;
 	version: string;
-	host: string;
 	port: number;
 	cors: boolean;
-	devMode: boolean;
 	getToolsList: () => unknown[];
 	routeToolCall: (toolName: string, args: unknown) => Promise<ToolCallResult>;
 	executeCommand: (
@@ -52,10 +40,7 @@ export interface HttpHandlerDeps {
 		input: unknown,
 		context?: CommandContext
 	) => Promise<CommandResult>;
-	executeBatch: (
-		request: BatchRequest,
-		context?: CommandContext
-	) => Promise<import('@lushly-dev/afd-core').BatchResult>;
+	executeBatch: (request: BatchRequest, context?: CommandContext) => Promise<BatchResult>;
 	executeStream: (
 		name: string,
 		input: unknown,
@@ -63,16 +48,22 @@ export interface HttpHandlerDeps {
 	) => AsyncGenerator<StreamChunk, void, unknown>;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════════
-// HTTP HANDLER FACTORY
-// ═══════════════════════════════════════════════════════════════════════════════
+function json(res: ServerResponse, status: number, body: unknown): void {
+	res.writeHead(status, { 'Content-Type': 'application/json' });
+	res.end(JSON.stringify(body));
+}
+
+function object(value: unknown): Record<string, unknown> {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) {
+		throw new HttpRequestError(400, 'Expected a JSON object');
+	}
+	return value as Record<string, unknown>;
+}
 
 export function createHttpHandler(deps: HttpHandlerDeps) {
 	const {
 		name,
 		version,
-		host,
-		port,
 		cors,
 		devMode,
 		getToolsList,
@@ -81,352 +72,198 @@ export function createHttpHandler(deps: HttpHandlerDeps) {
 		executeBatch,
 		executeStream,
 	} = deps;
-
-	// SSE client tracking
+	const maxBodyBytes = deps.maxBodyBytes ?? 1024 * 1024;
+	if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0)
+		throw new Error('maxBodyBytes must be a positive integer');
 	const sseClients = new Map<string, SseClient>();
+	const streams = new Map<ServerResponse, AbortController>();
 	let clientIdCounter = 0;
 
-	function sendSseEvent(client: SseClient, event: string, data: unknown): void {
-		const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
-		client.response.write(message);
-	}
-
-	/**
-	 * Handle MCP JSON-RPC request (synchronous methods).
-	 */
-	function handleMcpRequest(request: McpRequest): McpResponse {
-		const { id, method } = request;
-
+	async function handleMcpRequest(value: unknown): Promise<unknown> {
+		const request = object(value) as unknown as McpRequest;
+		const { id = null, method, params } = request;
+		if (typeof method !== 'string') throw new HttpRequestError(400, 'Request method is required');
+		let result: unknown;
 		switch (method) {
 			case 'initialize':
-				return {
-					jsonrpc: '2.0',
-					id,
-					result: {
-						protocolVersion: '2024-11-05',
-						capabilities: {
-							tools: {},
-						},
-						serverInfo: {
-							name,
-							version,
-						},
-					},
+				result = {
+					protocolVersion: '2024-11-05',
+					capabilities: { tools: {} },
+					serverInfo: { name, version },
 				};
-
+				break;
 			case 'tools/list':
-				return {
-					jsonrpc: '2.0',
-					id,
-					result: {
-						tools: getToolsList(),
-					},
-				};
-
+				result = { tools: getToolsList() };
+				break;
 			case 'notifications/initialized':
-				return {
-					jsonrpc: '2.0',
-					id,
-					result: {},
-				};
-
+				result = {};
+				break;
+			case 'tools/call': {
+				const args = object(params);
+				if (typeof args.name !== 'string') throw new HttpRequestError(400, 'Tool name is required');
+				result = await routeToolCall(args.name, args.arguments ?? {});
+				break;
+			}
 			default:
 				return {
 					jsonrpc: '2.0',
 					id,
-					error: {
-						code: -32601,
-						message: `Method not found: ${method}`,
-					},
+					error: { code: -32601, message: `Method not found: ${method}` },
 				};
 		}
+		return { jsonrpc: '2.0', id, result };
 	}
 
-	/**
-	 * Handle async MCP request (tools/call) — delegates to shared tool router.
-	 */
-	async function handleAsyncMcpRequest(request: McpRequest): Promise<McpResponse> {
-		const { id, method, params } = request;
-
-		if (method === 'tools/call') {
-			const { name: toolName, arguments: args } = params as {
-				name: string;
-				arguments?: unknown;
-			};
-			const result = await routeToolCall(toolName, args ?? {});
-			return {
-				jsonrpc: '2.0',
-				id,
-				result,
-			};
-		}
-
-		// Fall back to sync handler for other methods
-		return handleMcpRequest(request);
-	}
-
-	/**
-	 * Create HTTP request handler for all endpoints.
-	 */
-	const handler = async (
-		req: import('node:http').IncomingMessage,
-		res: import('node:http').ServerResponse
-	) => {
-		// CORS headers - restrictive in production, permissive in dev mode
-		if (cors) {
-			res.setHeader('Access-Control-Allow-Origin', devMode ? '*' : (req.headers.origin ?? ''));
+	async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		const url = validateHttpRequest(req, deps);
+		if (cors && req.headers.origin) {
+			res.setHeader('Access-Control-Allow-Origin', devMode ? '*' : req.headers.origin);
+			res.setHeader('Vary', 'Origin');
 			res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
 			res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 		}
-
-		// Handle preflight
 		if (req.method === 'OPTIONS') {
 			res.writeHead(204);
 			res.end();
 			return;
 		}
-
-		const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
-
-		// SSE endpoint
+		if (url.pathname === '/health' && req.method === 'GET') {
+			json(res, 200, { status: 'ok', name, version });
+			return;
+		}
 		if (url.pathname === '/sse' && req.method === 'GET') {
 			const clientId = `client-${++clientIdCounter}`;
-
 			res.writeHead(200, {
 				'Content-Type': 'text/event-stream',
 				'Cache-Control': 'no-cache',
 				Connection: 'keep-alive',
 			});
-
-			const client: SseClient = { id: clientId, response: res };
-			sseClients.set(clientId, client);
-
-			// Send endpoint info
-			sendSseEvent(client, 'endpoint', {
-				url: `http://${host}:${port}/message`,
-			});
-
-			// Handle client disconnect
-			req.on('close', () => {
-				sseClients.delete(clientId);
-			});
-
+			sseClients.set(clientId, { id: clientId, response: res });
+			res.write(
+				`event: endpoint\ndata: ${JSON.stringify({ url: new URL('/message', url).href })}\n\n`
+			);
+			res.once('close', () => sseClients.delete(clientId));
 			return;
 		}
-
-		// Message endpoint (MCP JSON-RPC)
 		if (url.pathname === '/message' && req.method === 'POST') {
-			let body = '';
-			for await (const chunk of req) {
-				body += chunk;
-			}
-
-			try {
-				const request = JSON.parse(body) as McpRequest;
-				const response = await handleAsyncMcpRequest(request);
-
-				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify(response));
-			} catch (_error) {
-				res.writeHead(400, { 'Content-Type': 'application/json' });
-				res.end(
-					JSON.stringify({
-						jsonrpc: '2.0',
-						id: null,
-						error: {
-							code: -32700,
-							message: 'Parse error',
-						},
-					})
-				);
-			}
-
+			json(res, 200, await handleMcpRequest(await readJsonBody(req, maxBodyBytes)));
 			return;
 		}
-
-		// Health check
-		if (url.pathname === '/health' && req.method === 'GET') {
-			res.writeHead(200, { 'Content-Type': 'application/json' });
-			res.end(JSON.stringify({ status: 'ok', name, version }));
-			return;
-		}
-
-		// RPC endpoint - Simple JSON-RPC for browser clients
 		if (url.pathname === '/rpc' && req.method === 'POST') {
-			let body = '';
-			for await (const chunk of req) {
-				body += chunk;
-			}
-
-			try {
-				const request = JSON.parse(body) as {
-					method: string;
-					params?: unknown;
-					id?: string | number;
-				};
-
-				const { method: commandName, params, id = null } = request;
-
-				if (!commandName || typeof commandName !== 'string') {
-					res.writeHead(400, { 'Content-Type': 'application/json' });
-					res.end(
-						JSON.stringify({
-							jsonrpc: '2.0',
-							id,
-							error: {
-								code: -32600,
-								message: 'Invalid request: method is required',
-							},
-						})
-					);
-					return;
-				}
-
-				const result = await executeCommand(commandName, params ?? {}, {
-					traceId: `rpc-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-				});
-
-				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(
-					JSON.stringify({
-						jsonrpc: '2.0',
-						id,
-						result,
-					})
-				);
-			} catch (_error) {
-				res.writeHead(400, { 'Content-Type': 'application/json' });
-				res.end(
-					JSON.stringify({
-						jsonrpc: '2.0',
-						id: null,
-						error: {
-							code: -32700,
-							message: 'Parse error',
-						},
-					})
-				);
-			}
-
+			const request = object(await readJsonBody(req, maxBodyBytes));
+			if (typeof request.method !== 'string' || !request.method)
+				throw new HttpRequestError(400, 'Request method is required');
+			const result = await executeCommand(request.method, request.params ?? {}, {
+				traceId: `rpc-${crypto.randomUUID()}`,
+			});
+			json(res, 200, { jsonrpc: '2.0', id: request.id ?? null, result });
 			return;
 		}
-
-		// Batch endpoint
 		if (url.pathname === '/batch' && req.method === 'POST') {
-			let body = '';
-			for await (const chunk of req) {
-				body += chunk;
-			}
-
-			try {
-				const batchRequest = JSON.parse(body) as import('@lushly-dev/afd-core').BatchRequest;
-
-				if (!isBatchRequest(batchRequest)) {
-					res.writeHead(400, { 'Content-Type': 'application/json' });
-					res.end(
-						JSON.stringify({
-							success: false,
-							error: {
-								code: 'INVALID_BATCH_REQUEST',
-								message: 'Invalid batch request format',
-								suggestion: 'Provide { commands: [...] } with command objects',
-							},
-						})
-					);
-					return;
-				}
-
-				const result = await executeBatch(batchRequest, {
-					traceId: `batch-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-				});
-
-				res.writeHead(200, { 'Content-Type': 'application/json' });
-				res.end(JSON.stringify(result));
-			} catch (_error) {
-				res.writeHead(400, { 'Content-Type': 'application/json' });
-				res.end(
-					JSON.stringify({
-						success: false,
-						error: {
-							code: 'PARSE_ERROR',
-							message: 'Failed to parse batch request',
-							suggestion: 'Ensure request body is valid JSON',
-						},
-					})
-				);
-			}
+			const request = await readJsonBody(req, maxBodyBytes);
+			if (!isBatchRequest(request))
+				throw new HttpRequestError(400, 'Provide { commands: [...] } with command objects');
+			json(res, 200, await executeBatch(request, { traceId: `batch-${crypto.randomUUID()}` }));
 			return;
 		}
-
-		// Stream endpoint - SSE for streaming command results
-		if (url.pathname.startsWith('/stream/') && req.method === 'GET') {
-			const commandName = url.pathname.slice('/stream/'.length);
-			const inputParam = url.searchParams.get('input');
-			let input: unknown = {};
-
-			if (inputParam) {
+		if (url.pathname.startsWith('/stream/') && (req.method === 'GET' || req.method === 'POST')) {
+			let commandName: string;
+			try {
+				commandName = decodeURIComponent(url.pathname.slice('/stream/'.length));
+			} catch {
+				throw new HttpRequestError(400, 'Invalid stream command name');
+			}
+			let input: unknown;
+			if (req.method === 'POST') input = await readJsonBody(req, maxBodyBytes);
+			else {
 				try {
-					input = JSON.parse(inputParam);
+					input = JSON.parse(url.searchParams.get('input') ?? '{}');
 				} catch {
-					res.writeHead(400, { 'Content-Type': 'application/json' });
-					res.end(
-						JSON.stringify({
-							success: false,
-							error: {
-								code: 'INVALID_INPUT',
-								message: 'Failed to parse input parameter',
-								suggestion: 'Ensure input is valid JSON',
-							},
-						})
-					);
-					return;
+					throw new HttpRequestError(400, 'Stream input must be valid JSON');
 				}
 			}
-
-			// Set up SSE response
+			const controller = new AbortController();
+			streams.set(res, controller);
+			const abort = () => controller.abort();
+			res.once('close', abort);
 			res.writeHead(200, {
 				'Content-Type': 'text/event-stream',
 				'Cache-Control': 'no-cache',
 				Connection: 'keep-alive',
 			});
-
-			const context: CommandContext = {
-				traceId: `stream-${Date.now()}-${Math.random().toString(36).slice(2)}`,
-			};
-
-			// Handle client disconnect
-			let aborted = false;
-			req.on('close', () => {
-				aborted = true;
-			});
-
-			// Stream the command execution
+			res.flushHeaders();
 			try {
+				const context = { traceId: `stream-${crypto.randomUUID()}`, signal: controller.signal };
 				for await (const chunk of executeStream(commandName, input, context)) {
-					if (aborted) break;
-					res.write(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`);
+					if (controller.signal.aborted) break;
+					if (!res.write(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`)) {
+						await once(res, 'drain', { signal: controller.signal });
+					}
 				}
 			} catch (error) {
-				const errorChunk = createErrorChunk(
-					{
-						code: 'STREAM_ERROR',
-						message: error instanceof Error ? error.message : String(error),
-						retryable: true,
-					},
-					0,
-					true
-				);
-				res.write(`event: chunk\ndata: ${JSON.stringify(errorChunk)}\n\n`);
+				if (!controller.signal.aborted) {
+					const chunk = createErrorChunk(
+						{
+							code: 'STREAM_ERROR',
+							message:
+								devMode && error instanceof Error ? error.message : 'Stream execution failed',
+							suggestion: 'Retry the command or contact the server operator',
+							retryable: true,
+						},
+						0,
+						true
+					);
+					res.write(`event: chunk\ndata: ${JSON.stringify(chunk)}\n\n`);
+				}
+			} finally {
+				controller.abort();
+				streams.delete(res);
+				res.off('close', abort);
+				res.end();
 			}
-
-			res.end();
 			return;
 		}
+		json(res, 404, { error: 'Not found' });
+	}
 
-		// Not found
-		res.writeHead(404, { 'Content-Type': 'application/json' });
-		res.end(JSON.stringify({ error: 'Not found' }));
+	const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+		// Rejected/unconsumed uploads can emit a late socket error after the response.
+		const observeRequestError = () => {};
+		req.on('error', observeRequestError);
+		req.once('close', () => req.off('error', observeRequestError));
+		try {
+			await route(req, res);
+		} catch (error) {
+			if (res.destroyed || res.writableEnded) return;
+			if (res.headersSent) {
+				res.end();
+				return;
+			}
+			const status = error instanceof HttpRequestError ? error.status : 500;
+			const message =
+				error instanceof HttpRequestError ? error.message : 'An internal error occurred';
+			res.setHeader('Connection', 'close');
+			json(res, status, {
+				success: false,
+				error: {
+					code: `HTTP_${status}`,
+					message,
+					suggestion:
+						status === 500
+							? 'Retry or contact the server operator'
+							: 'Correct the request headers or body and retry',
+				},
+			});
+		}
 	};
-
-	return { handler, sseClients };
+	const dispose = () => {
+		for (const client of sseClients.values()) client.response.end();
+		sseClients.clear();
+		for (const [response, controller] of streams) {
+			controller.abort();
+			response.end();
+		}
+		streams.clear();
+	};
+	return { handler, sseClients, dispose };
 }

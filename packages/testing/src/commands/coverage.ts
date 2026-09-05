@@ -1,3 +1,5 @@
+// afd-override: max-lines=600
+// Coverage analysis is one cohesive report pipeline; split when it reaches this ratchet.
 /**
  * @lushly-dev/afd-testing - scenario-coverage command
  *

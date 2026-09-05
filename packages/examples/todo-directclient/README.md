@@ -5,6 +5,10 @@ A Todo app demonstrating **DirectClient** - AFD's zero-overhead transport for AI
 ## What This Demonstrates
 
 - **DirectClient**: ~0.03ms per command (vs ~2-10ms for MCP)
+
+The same commands also opt in to external MCP access with `expose: { mcp: true }`.
+Command exposure defaults to private for MCP, even when a command is registered
+with a server; this explicit flag makes the remote surface intentional.
 - **AI Copilot**: Gemini 2.0 Flash integration with tool calling
 - **Security Hardening**: CORS, rate limiting, input validation
 - **Observability**: Health checks, metrics, request tracing

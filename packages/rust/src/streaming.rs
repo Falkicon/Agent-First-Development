@@ -3,7 +3,7 @@
 //! Streaming allows commands to report progress and partial data
 //! before the final result is ready.
 
-use serde::{Deserialize, Serialize};
+use serde::{de::Deserializer, ser::Serializer, Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
 use crate::errors::CommandError;
@@ -88,8 +88,7 @@ pub struct ErrorChunk {
 }
 
 /// A chunk from a streaming command.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone)]
 pub enum StreamChunk<T = serde_json::Value> {
     /// Progress update.
     Progress(ProgressChunk),
@@ -99,6 +98,141 @@ pub enum StreamChunk<T = serde_json::Value> {
     Complete(CompleteChunk<T>),
     /// Stream encountered an error.
     Error(ErrorChunk),
+}
+
+/// Wire representation of a stream chunk without the duplicated inner
+/// `chunk_type` field. The public chunk structs retain that field for source
+/// compatibility, while the union has one canonical discriminator.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum StreamChunkRef<'a, T> {
+    Progress {
+        progress: f64,
+        message: &'a str,
+        #[serde(rename = "currentStep", skip_serializing_if = "Option::is_none")]
+        current_step: Option<u32>,
+        #[serde(rename = "totalSteps", skip_serializing_if = "Option::is_none")]
+        total_steps: Option<u32>,
+    },
+    Data {
+        data: &'a T,
+        #[serde(rename = "isFinal")]
+        is_final: bool,
+        #[serde(rename = "sequence", skip_serializing_if = "Option::is_none")]
+        sequence: Option<u32>,
+    },
+    Complete {
+        data: &'a T,
+        #[serde(rename = "durationMs", skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+    },
+    Error {
+        error: &'a CommandError,
+        recoverable: bool,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum StreamChunkWire<T> {
+    Progress {
+        progress: f64,
+        message: String,
+        #[serde(rename = "currentStep", default)]
+        current_step: Option<u32>,
+        #[serde(rename = "totalSteps", default)]
+        total_steps: Option<u32>,
+    },
+    Data {
+        data: T,
+        #[serde(rename = "isFinal", default)]
+        is_final: bool,
+        #[serde(default)]
+        sequence: Option<u32>,
+    },
+    Complete {
+        data: T,
+        #[serde(rename = "durationMs", default)]
+        duration_ms: Option<u64>,
+    },
+    Error {
+        error: CommandError,
+        #[serde(default)]
+        recoverable: bool,
+    },
+}
+
+impl<T: Serialize> Serialize for StreamChunk<T> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let wire = match self {
+            Self::Progress(chunk) => StreamChunkRef::Progress {
+                progress: chunk.progress,
+                message: &chunk.message,
+                current_step: chunk.current_step,
+                total_steps: chunk.total_steps,
+            },
+            Self::Data(chunk) => StreamChunkRef::Data {
+                data: &chunk.data,
+                is_final: chunk.is_final,
+                sequence: chunk.sequence,
+            },
+            Self::Complete(chunk) => StreamChunkRef::Complete {
+                data: &chunk.data,
+                duration_ms: chunk.duration_ms,
+            },
+            Self::Error(chunk) => StreamChunkRef::Error {
+                error: &chunk.error,
+                recoverable: chunk.recoverable,
+            },
+        };
+
+        wire.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for StreamChunk<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match StreamChunkWire::deserialize(deserializer)? {
+            StreamChunkWire::Progress {
+                progress,
+                message,
+                current_step,
+                total_steps,
+            } => Self::Progress(ProgressChunk {
+                chunk_type: "progress".to_string(),
+                progress,
+                message,
+                current_step,
+                total_steps,
+            }),
+            StreamChunkWire::Data {
+                data,
+                is_final,
+                sequence,
+            } => Self::Data(DataChunk {
+                chunk_type: "data".to_string(),
+                data,
+                is_final,
+                sequence,
+            }),
+            StreamChunkWire::Complete { data, duration_ms } => Self::Complete(CompleteChunk {
+                chunk_type: "complete".to_string(),
+                data,
+                duration_ms,
+            }),
+            StreamChunkWire::Error { error, recoverable } => Self::Error(ErrorChunk {
+                chunk_type: "error".to_string(),
+                error,
+                recoverable,
+            }),
+        })
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -414,7 +548,6 @@ pub fn collect_stream_data<T: Clone>(chunks: &[StreamChunk<T>]) -> Vec<T> {
         .iter()
         .filter_map(|chunk| match chunk {
             StreamChunk::Data(data_chunk) => Some(data_chunk.data.clone()),
-            StreamChunk::Complete(complete_chunk) => Some(complete_chunk.data.clone()),
             _ => None,
         })
         .collect()
@@ -512,7 +645,59 @@ mod tests {
         ];
 
         let data = collect_stream_data(&chunks);
-        assert_eq!(data, vec!["chunk1", "chunk2", "final"]);
+        assert_eq!(data, vec!["chunk1", "chunk2"]);
+    }
+
+    #[test]
+    fn test_stream_chunk_wire_round_trip_has_one_discriminator() {
+        let chunks = vec![
+            StreamChunk::Progress(create_progress_chunk_with_steps(25.0, "Starting", 1, 4)),
+            StreamChunk::Data({
+                let mut chunk = create_data_chunk(serde_json::json!({"id": 1}), false);
+                chunk.sequence = Some(2);
+                chunk
+            }),
+            StreamChunk::Complete(create_complete_chunk(
+                serde_json::json!({"done": true}),
+                Some(42),
+            )),
+            StreamChunk::Error(create_error_chunk(CommandError::internal("failed"), true)),
+        ];
+
+        for chunk in chunks {
+            let json = serde_json::to_value(&chunk).expect("chunk should serialize");
+            let original = json.clone();
+            assert_eq!(
+                json.get("type").and_then(|value| value.as_str()),
+                Some(match &chunk {
+                    StreamChunk::Progress(_) => "progress",
+                    StreamChunk::Data(_) => "data",
+                    StreamChunk::Complete(_) => "complete",
+                    StreamChunk::Error(_) => "error",
+                })
+            );
+            assert_eq!(
+                json.as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|key| *key == "type")
+                    .count(),
+                1
+            );
+            let expected_type = json
+                .get("type")
+                .and_then(|value| value.as_str())
+                .map(str::to_owned);
+
+            let decoded: StreamChunk<serde_json::Value> =
+                serde_json::from_value(json).expect("chunk should deserialize");
+            let reencoded = serde_json::to_value(decoded).expect("decoded chunk should serialize");
+            assert_eq!(reencoded, original);
+            assert_eq!(
+                reencoded.get("type").and_then(|value| value.as_str()),
+                expected_type.as_deref()
+            );
+        }
     }
 
     #[tokio::test]

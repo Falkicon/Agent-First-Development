@@ -143,7 +143,7 @@ export class GitHubConnector {
 
 		// Parse issue number from URL in stdout (e.g., https://github.com/owner/repo/issues/123)
 		const match = result.stdout.match(/\/issues\/(\d+)/);
-		if (!match || !match[1]) {
+		if (!match?.[1]) {
 			throw new Error('Could not parse issue number from gh output');
 		}
 
@@ -232,7 +232,7 @@ export class GitHubConnector {
 
 		// Parse PR number from URL in stdout (e.g., https://github.com/owner/repo/pull/123)
 		const match = result.stdout.match(/\/pull\/(\d+)/);
-		if (!match || !match[1]) {
+		if (!match?.[1]) {
 			throw new Error('Could not parse PR number from gh output');
 		}
 

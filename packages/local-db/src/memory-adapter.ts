@@ -7,6 +7,18 @@ import type {
 	QueryParams,
 } from './types.js';
 
+function compareSortValues(a: unknown, b: unknown): number {
+	if (typeof a === 'number' && Number.isFinite(a) && typeof b === 'number' && Number.isFinite(b)) {
+		if (a < b) return -1;
+		if (a > b) return 1;
+		return 0;
+	}
+
+	const aValue = a == null ? '' : String(a);
+	const bValue = b == null ? '' : String(b);
+	return aValue.localeCompare(bValue);
+}
+
 /**
  * In-memory DataAdapter backed by nested Maps.
  *
@@ -63,9 +75,7 @@ export class MemoryAdapter implements DataAdapter {
 			const sortKey = params.sort;
 			const order = params.order === 'desc' ? -1 : 1;
 			rows.sort((a, b) => {
-				const aVal = String(a[sortKey] ?? '');
-				const bVal = String(b[sortKey] ?? '');
-				return aVal.localeCompare(bVal) * order;
+				return compareSortValues(a[sortKey], b[sortKey]) * order;
 			});
 		}
 

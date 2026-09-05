@@ -15,6 +15,7 @@ export const toggleTodo = defineCommand<typeof inputSchema, Todo>({
 	name: 'todo-toggle',
 	description: 'Toggle the completion status of a todo',
 	category: 'todo',
+	expose: { mcp: true },
 	tags: ['todo', 'toggle', 'write', 'single'],
 	mutation: true,
 	version: '1.0.0',

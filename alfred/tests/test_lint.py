@@ -1,6 +1,5 @@
 """Tests for alfred_lint command."""
 
-import asyncio
 import tempfile
 from pathlib import Path
 

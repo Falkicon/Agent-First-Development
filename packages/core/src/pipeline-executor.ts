@@ -24,6 +24,7 @@ import {
 	aggregatePipelineWarnings,
 	buildConfidenceBreakdown,
 	evaluateCondition,
+	isPipelineRequest,
 	resolveVariables,
 } from './pipeline.js';
 import type { CommandResult } from './result.js';
@@ -80,10 +81,11 @@ export async function executePipeline(
 	context: Record<string, unknown> = {}
 ): Promise<PipelineResult> {
 	const startTime = performance.now();
-	const pipelineId = request.id ?? `pipeline-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	const pipelineId = request?.id ?? `pipeline-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-	// Validate request
-	if (!request.steps || request.steps.length === 0) {
+	// Validate the complete envelope before invoking any command.
+	const valid = isPipelineRequest(request);
+	if (!valid || request.steps.length === 0) {
 		return {
 			data: undefined,
 			metadata: {
@@ -97,7 +99,22 @@ export async function executePipeline(
 				completedSteps: 0,
 				totalSteps: 0,
 			},
-			steps: [],
+			steps: valid
+				? []
+				: [
+						{
+							index: -1,
+							command: '',
+							status: 'failure',
+							executionTimeMs: 0,
+							error: {
+								code: 'INVALID_PIPELINE_REQUEST',
+								message: 'Invalid pipeline request envelope',
+								suggestion:
+									'Provide steps with nonempty command names, object inputs, valid conditions, and correctly typed options',
+							},
+						},
+					],
 		};
 	}
 
@@ -107,7 +124,7 @@ export async function executePipeline(
 		steps: [],
 	};
 
-	const stepResults: StepResult[] = [];
+	const stepResults: StepResult[] = pipelineContext.steps;
 	const options = request.options ?? {};
 
 	for (let i = 0; i < request.steps.length; i++) {
@@ -116,7 +133,7 @@ export async function executePipeline(
 		const stepStartTime = performance.now();
 
 		// Evaluate when condition if present
-		if (step.when && !evaluateCondition(step.when, pipelineContext)) {
+		if (!options.parallel && step.when && !evaluateCondition(step.when, pipelineContext)) {
 			stepResults.push({
 				index: i,
 				alias: step.as,
@@ -131,10 +148,70 @@ export async function executePipeline(
 		const resolvedInput = step.input ? resolveVariables(step.input, pipelineContext) : {};
 
 		// Execute the command
-		const result = await execute(step.command, resolvedInput, {
-			...context,
-			traceId: (context.traceId as string | undefined) ?? `${pipelineId}-step-${i}`,
-		});
+		const remainingMs =
+			options.timeoutMs === undefined
+				? undefined
+				: options.timeoutMs - (performance.now() - startTime);
+		const controller = new AbortController();
+		const callerSignal = context.signal instanceof AbortSignal ? context.signal : undefined;
+		const signal = callerSignal
+			? AbortSignal.any([callerSignal, controller.signal])
+			: controller.signal;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutResult: CommandResult = {
+			success: false,
+			error: {
+				code: 'PIPELINE_TIMEOUT',
+				message: `Pipeline timeout exceeded (${options.timeoutMs}ms)`,
+				suggestion: 'Increase timeoutMs or reduce the number of pipeline steps',
+				retryable: true,
+			},
+		};
+		let result: CommandResult;
+		try {
+			if (options.parallel) {
+				result = {
+					success: false,
+					error: {
+						code: 'UNSUPPORTED_OPTION',
+						message: 'Parallel pipeline execution is not supported',
+						suggestion: 'Remove parallel or set it to false to execute steps sequentially',
+					},
+				};
+			} else if (remainingMs !== undefined && remainingMs <= 0) {
+				controller.abort();
+				result = timeoutResult;
+			} else {
+				const execution = execute(step.command, resolvedInput, {
+					...context,
+					signal,
+					traceId: (context.traceId as string | undefined) ?? `${pipelineId}-step-${i}`,
+				});
+				result =
+					remainingMs === undefined
+						? await execution
+						: await Promise.race([
+								execution,
+								new Promise<CommandResult>((resolve) => {
+									timer = setTimeout(() => {
+										resolve(timeoutResult);
+										controller.abort();
+									}, remainingMs);
+								}),
+							]);
+			}
+		} catch (error) {
+			result = {
+				success: false,
+				error: {
+					code: 'COMMAND_EXECUTION_ERROR',
+					message: error instanceof Error ? error.message : String(error),
+					suggestion: 'Check the command implementation and retry',
+				},
+			};
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 
 		const stepExecutionTimeMs = performance.now() - stepStartTime;
 
@@ -155,7 +232,6 @@ export async function executePipeline(
 				},
 			};
 			stepResults.push(stepResult);
-			pipelineContext.steps.push(stepResult);
 			pipelineContext.previousResult = stepResult;
 		} else {
 			const stepResult: StepResult = {
@@ -168,7 +244,11 @@ export async function executePipeline(
 			};
 			stepResults.push(stepResult);
 
-			if (!options.continueOnFailure) {
+			if (
+				!options.continueOnFailure ||
+				result.error?.code === 'PIPELINE_TIMEOUT' ||
+				options.parallel
+			) {
 				// Mark remaining steps as skipped
 				for (let j = i + 1; j < request.steps.length; j++) {
 					const remainingStep = request.steps[j];
@@ -178,6 +258,7 @@ export async function executePipeline(
 						alias: remainingStep.as,
 						command: remainingStep.command,
 						status: 'skipped',
+						...(result.error?.code === 'PIPELINE_TIMEOUT' ? { error: result.error } : {}),
 						executionTimeMs: 0,
 					});
 				}

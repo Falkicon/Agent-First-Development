@@ -11,7 +11,7 @@
  */
 
 import { createCommandRegistry, defaultExpose, success } from '@lushly-dev/afd-core';
-import { defineCommand } from '@lushly-dev/afd-server';
+import { defineCommand, type ZodCommandDefinition } from '@lushly-dev/afd-server';
 import { z } from 'zod';
 
 const divider = (label: string) =>
@@ -109,9 +109,26 @@ const agentAnalyze = defineCommand({
 const commands = [todoCreate, todoList, todoDelete, adminReset, internalHealthCheck, agentAnalyze];
 
 const registry = createCommandRegistry();
-for (const cmd of commands) {
-	registry.register(cmd.toCommandDefinition());
-}
+registry.register(todoCreate.toCommandDefinition());
+registry.register(todoList.toCommandDefinition());
+registry.register(todoDelete.toCommandDefinition());
+registry.register(adminReset.toCommandDefinition());
+registry.register(internalHealthCheck.toCommandDefinition());
+registry.register(agentAnalyze.toCommandDefinition());
+
+type TrustMetadata = Pick<ZodCommandDefinition, 'destructive' | 'confirmPrompt'>;
+const trustMetadataByName = new Map<string, TrustMetadata>(
+	commands.map(
+		(command) =>
+			[
+				command.name,
+				{
+					destructive: command.destructive,
+					confirmPrompt: command.confirmPrompt,
+				},
+			] as const
+	)
+);
 
 async function run() {
 	console.log('\n🔒  Expose & Trust Demo\n');
@@ -205,11 +222,12 @@ async function run() {
 	divider('5. Trust Metadata (destructive, confirmPrompt)');
 
 	for (const cmd of allCmds) {
+		const trustMetadata = trustMetadataByName.get(cmd.name);
 		const flags: string[] = [];
 		if (cmd.mutation) flags.push('mutation');
-		if ((cmd as { destructive?: boolean }).destructive) flags.push('🔴 destructive');
-		if ((cmd as { confirmPrompt?: string }).confirmPrompt) {
-			flags.push(`confirm: "${(cmd as { confirmPrompt: string }).confirmPrompt}"`);
+		if (trustMetadata?.destructive) flags.push('🔴 destructive');
+		if (trustMetadata?.confirmPrompt) {
+			flags.push(`confirm: "${trustMetadata.confirmPrompt}"`);
 		}
 		if (cmd.undoable) flags.push('↩️  undoable');
 		if (flags.length > 0) {

@@ -428,6 +428,10 @@ export async function createReconnectingHandoff(
 	let isReconnecting = false;
 	let state: HandoffConnectionState = 'connecting';
 	let closed = false;
+	let connectionGeneration = 0;
+	let reconnectPromise: Promise<void> | null = null;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+	let reconnectDelayResolve: (() => void) | null = null;
 
 	const setState = (newState: HandoffConnectionState) => {
 		state = newState;
@@ -435,111 +439,119 @@ export async function createReconnectingHandoff(
 	};
 
 	const connect = async (reconnecting = false): Promise<HandoffConnection> => {
+		const generation = ++connectionGeneration;
+		const active = () => !closed && generation === connectionGeneration;
 		if (reconnecting) {
 			setState('reconnecting');
 		} else {
 			setState('connecting');
 		}
 
-		try {
-			const conn = await connectHandoff(currentHandoff, {
-				...connectionOptions,
-				onConnect: (rawConn) => {
-					setState('connected');
-					reconnectAttempt = 0;
-					isReconnecting = false;
-					connectionOptions.onConnect?.(rawConn);
-				},
-				onDisconnect: async (code, reason) => {
-					if (closed) {
-						setState('disconnected');
-						onDisconnect?.(code, reason);
-						return;
-					}
+		const conn = await connectHandoff(currentHandoff, {
+			...connectionOptions,
+			onConnect: (rawConn) => {
+				if (!active()) return;
+				setState('connected');
+				connectionOptions.onConnect?.(rawConn);
+			},
+			onDisconnect: (code, reason) => {
+				if (!active()) return;
+				connectionGeneration++;
+				currentConnection = null;
+				if (closed || handoff.metadata?.reconnect?.allowed === false) {
+					setState('disconnected');
+					onDisconnect?.(code, reason);
+					return;
+				}
+				void attemptReconnect();
+			},
+			onMessage: (message) => {
+				if (active()) connectionOptions.onMessage?.(message);
+			},
+			onError: (error) => {
+				if (active()) connectionOptions.onError?.(error);
+			},
+		});
 
-					// Check if reconnection is allowed
-					const canReconnect =
-						handoff.metadata?.reconnect?.allowed !== false && reconnectAttempt < maxAttempts;
-
-					if (canReconnect) {
-						await attemptReconnect();
-					} else {
-						setState('disconnected');
-						onDisconnect?.(code, reason);
-					}
-				},
-				onError: (error) => {
-					if (connectionOptions.onError) {
-						connectionOptions.onError(error);
-					}
-				},
-			});
-
-			currentConnection = conn;
-			return conn;
-		} catch (error) {
-			if (!closed && reconnectAttempt < maxAttempts) {
-				await attemptReconnect();
-				if (!currentConnection) throw new Error('Connection not established');
-				return currentConnection;
-			}
-			throw error;
+		if (!active()) {
+			conn.close();
+			throw new Error('Connection closed during connection attempt');
 		}
+		currentConnection = conn;
+		return conn;
 	};
 
-	const attemptReconnect = async (): Promise<void> => {
-		if (closed || isReconnecting) return;
+	const waitForBackoff = (delay: number): Promise<void> =>
+		new Promise((resolve) => {
+			reconnectDelayResolve = resolve;
+			reconnectTimer = setTimeout(() => {
+				reconnectTimer = null;
+				reconnectDelayResolve = null;
+				resolve();
+			}, delay);
+		});
 
+	const cancelBackoff = () => {
+		if (reconnectTimer) clearTimeout(reconnectTimer);
+		reconnectTimer = null;
+		const resolve = reconnectDelayResolve;
+		reconnectDelayResolve = null;
+		resolve?.();
+	};
+
+	const runReconnectLoop = async (): Promise<void> => {
 		isReconnecting = true;
-		reconnectAttempt++;
-
-		if (reconnectAttempt > maxAttempts) {
-			isReconnecting = false;
-			setState('failed');
-			onReconnectFailed?.();
-			return;
-		}
-
-		onReconnect?.(reconnectAttempt);
-
-		// Calculate exponential backoff with jitter
-		const delay = Math.min(
-			backoffMs * 2 ** (reconnectAttempt - 1) + Math.random() * 100,
-			maxBackoffMs
-		);
-
-		await sleep(delay);
-
-		if (closed) return;
-
-		// Try to get a new handoff via reconnect command
-		if (reconnectCommand) {
-			try {
-				const args = { ...reconnectArgs };
-				if (sessionId) {
-					args.sessionId = sessionId;
-				}
-
-				const result = await client.call<HandoffResult>(reconnectCommand, args);
-
-				if (result.success && result.data && isHandoff(result.data)) {
-					currentHandoff = result.data;
-				}
-			} catch {
-				// If reconnect command fails, try with original handoff
-			}
-		}
-
 		try {
-			await connect(true);
-		} catch {
-			// Reconnection failed, will be retried on next disconnect
-			if (reconnectAttempt >= maxAttempts) {
-				isReconnecting = false;
+			for (let attempt = 1; attempt <= maxAttempts && !closed; attempt++) {
+				reconnectAttempt = attempt;
+				setState('reconnecting');
+				onReconnect?.(attempt);
+				const delay = Math.min(backoffMs * 2 ** (attempt - 1) + Math.random() * 100, maxBackoffMs);
+				await waitForBackoff(delay);
+				if (closed) return;
+
+				if (reconnectCommand) {
+					try {
+						const args = { ...reconnectArgs };
+						if (sessionId) args.sessionId = sessionId;
+						const result = await client.call<HandoffResult>(reconnectCommand, args);
+						if (result.success && result.data && isHandoff(result.data)) {
+							currentHandoff = result.data;
+						}
+					} catch {
+						// Fall back to the last valid handoff.
+					}
+				}
+
+				try {
+					await connect(true);
+					reconnectAttempt = 0;
+					return;
+				} catch {
+					// The loop owns all bounded retry attempts.
+				}
+			}
+
+			if (!closed) {
 				setState('failed');
 				onReconnectFailed?.();
 			}
+		} finally {
+			isReconnecting = false;
 		}
+	};
+
+	const attemptReconnect = (): Promise<void> => {
+		if (closed) return Promise.resolve();
+		if (reconnectPromise) return reconnectPromise;
+		connectionGeneration++;
+		const previous = currentConnection;
+		currentConnection = null;
+		previous?.close();
+		reconnectPromise = runReconnectLoop().finally(() => {
+			reconnectPromise = null;
+		});
+		return reconnectPromise;
 	};
 
 	// Initial connection
@@ -570,14 +582,18 @@ export async function createReconnectingHandoff(
 		},
 
 		close() {
+			if (closed) return;
 			closed = true;
 			isReconnecting = false;
+			cancelBackoff();
 			currentConnection?.close();
+			currentConnection = null;
 			setState('disconnected');
+			onDisconnect?.();
 		},
 
 		async reconnect() {
-			if (isReconnecting) return;
+			if (closed) throw new Error('Cannot reconnect a closed connection');
 			reconnectAttempt = 0;
 			await attemptReconnect();
 		},
@@ -593,10 +609,6 @@ export async function createReconnectingHandoff(
 /**
  * Sleep for a specified number of milliseconds.
  */
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 /**
  * Build a WebSocket URL with authentication token as query parameter.
  *

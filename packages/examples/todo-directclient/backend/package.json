@@ -30,16 +30,16 @@
 		"test:watch": "vitest"
 	},
 	"dependencies": {
-		"@google/genai": "^1.45.0",
+		"@google/genai": "^1.52.0",
 		"@lushly-dev/afd-client": "workspace:*",
 		"@lushly-dev/afd-core": "workspace:*",
 		"@lushly-dev/afd-server": "workspace:*",
-		"dotenv": "^17.0.0",
-		"zod": "^4.0.0"
+		"dotenv": "^17.4.2",
+		"zod": "^4.5.4"
 	},
 	"devDependencies": {
-		"tsx": "^4.21.0",
+		"tsx": "^4.23.13",
 		"typescript": "^5.9.3",
-		"vitest": "^4.1.0"
+		"vitest": "^4.1.11"
 	}
 }

@@ -12,6 +12,7 @@ import { getToolsList } from './tools.js';
 import { z } from 'zod';
 
 const docCreate = defineCommand({
+	expose: { mcp: true },
 	name: 'doc-create',
 	description: 'Create a document',
 	input: z.object({ title: z.string() }),
@@ -22,6 +23,7 @@ const docCreate = defineCommand({
 });
 
 const docPrint = defineCommand({
+	expose: { mcp: true },
 	name: 'doc-print',
 	description: 'Print a document',
 	input: z.object({ id: z.string() }),
@@ -32,6 +34,7 @@ const docPrint = defineCommand({
 });
 
 const universalHelp = defineCommand({
+	expose: { mcp: true },
 	name: 'app-help',
 	description: 'Show help information for the application',
 	input: z.object({}),
@@ -41,6 +44,7 @@ const universalHelp = defineCommand({
 });
 
 const multiContextCmd = defineCommand({
+	expose: { mcp: true },
 	name: 'doc-view',
 	description: 'View a document in any context',
 	input: z.object({ id: z.string() }),

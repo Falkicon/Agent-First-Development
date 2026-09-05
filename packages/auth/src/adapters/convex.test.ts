@@ -27,6 +27,7 @@ describe('useConvexAuthAdapter', () => {
 			meQuery: () => (overrides.user === undefined ? null : overrides.user),
 			_signIn: signIn,
 			_signOut: signOut,
+			_state: overrides,
 		};
 	}
 
@@ -51,6 +52,28 @@ describe('useConvexAuthAdapter', () => {
 		if (session.status === 'authenticated') {
 			expect(session.user.email).toBe('test@example.com');
 			expect(session.session.id).toContain('convex-');
+		}
+	});
+
+	it('notifies on same-status profile changes and keeps unchanged snapshots stable', () => {
+		const opts = createMockOptions({ isAuthenticated: true, user: mockUser });
+		const { result, rerender } = renderHook(() => useConvexAuthAdapter(opts));
+		const firstSnapshot = result.current.getSession();
+		const states: AuthSessionState[] = [];
+		result.current.onAuthStateChange((state) => states.push(state));
+
+		rerender();
+		expect(result.current.getSession()).toBe(firstSnapshot);
+		expect(states).toHaveLength(0);
+
+		opts._state.user = { ...mockUser, name: 'Updated' };
+		rerender();
+
+		expect(states).toHaveLength(1);
+		const updated = result.current.getSession();
+		expect(updated.status).toBe('authenticated');
+		if (updated.status === 'authenticated') {
+			expect(updated.user.name).toBe('Updated');
 		}
 	});
 

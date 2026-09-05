@@ -841,7 +841,7 @@ export function commandToMcpTool(command: CommandDefinition): {
 /**
  * Check if a command is exposed to MCP.
  */
-export function isMcpExposed(command: CommandDefinition): boolean {
+export function isMcpExposed(command: Pick<CommandDefinition, 'expose'>): boolean {
 	const expose = command.expose ?? defaultExpose;
 	return expose.mcp === true;
 }

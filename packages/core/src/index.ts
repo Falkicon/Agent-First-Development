@@ -46,9 +46,11 @@ export type {
 	JsonSchema,
 } from './commands.js';
 export {
+	commandsToMcpTools,
 	commandToMcpTool,
 	createCommandRegistry,
 	defaultExpose,
+	isMcpExposed,
 	validateCommandName,
 } from './commands.js';
 export type {

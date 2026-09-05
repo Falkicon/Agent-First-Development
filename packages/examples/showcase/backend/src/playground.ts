@@ -9,7 +9,8 @@
  * 5. Command prerequisites (requires field + cycle detection)
  */
 
-import { createAuthCommands, createAuthMiddleware, MockAuthAdapter } from '@lushly-dev/afd-auth';
+import { createAuthMiddleware, MockAuthAdapter } from '@lushly-dev/afd-auth';
+import { createAuthCommands } from '@lushly-dev/afd-auth/commands';
 import { success } from '@lushly-dev/afd-core';
 import { createMcpServer, defaultMiddleware, defineCommand } from '@lushly-dev/afd-server';
 import { computeComplexity, validateCommandSurface } from '@lushly-dev/afd-testing';

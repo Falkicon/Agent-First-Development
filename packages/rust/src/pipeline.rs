@@ -136,9 +136,8 @@ pub struct PipelineOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 
-    /// Execute steps in parallel where dependencies allow.
-    ///
-    /// Steps that don't reference $prev can potentially run in parallel.
+    /// Reserved for dependency-aware parallel execution. `true` is currently
+    /// rejected with `UNSUPPORTED_OPTION`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel: Option<bool>,
 }
@@ -1343,12 +1342,64 @@ pub async fn execute_pipeline(
     let options = request.options.clone().unwrap_or_default();
     let base_context = context.unwrap_or_default();
 
+    let unsupported_deadline = !cfg!(feature = "native") && options.timeout_ms.is_some();
+    if options.parallel == Some(true) || unsupported_deadline {
+        let unsupported = CommandError {
+            code: "UNSUPPORTED_OPTION".to_string(),
+            message: if unsupported_deadline {
+                "Pipeline deadlines require the native feature".to_string()
+            } else {
+                "Parallel pipeline execution is not supported".to_string()
+            },
+            suggestion: Some(if unsupported_deadline {
+                "Enable the native feature or omit timeoutMs".to_string()
+            } else {
+                "Remove parallel or set it to false to execute steps sequentially".to_string()
+            }),
+            retryable: Some(false),
+            details: None,
+            cause: None,
+        };
+        for (i, step) in request.steps.iter().enumerate() {
+            step_results.push(StepResult {
+                index: i,
+                alias: step.alias.clone(),
+                command: step.command.clone(),
+                status: if i == 0 {
+                    StepStatus::Failure
+                } else {
+                    StepStatus::Skipped
+                },
+                data: None,
+                error: (i == 0).then_some(unsupported.clone()),
+                execution_time_ms: 0,
+                metadata: None,
+            });
+        }
+        return PipelineResult {
+            data: serde_json::Value::Null,
+            metadata: PipelineMetadata {
+                confidence: 0.0,
+                confidence_breakdown: vec![],
+                reasoning: vec![],
+                warnings: vec![],
+                sources: vec![],
+                alternatives: vec![],
+                execution_time_ms: 0,
+                completed_steps: 0,
+                total_steps: request.steps.len() as u32,
+                result_metadata: None,
+            },
+            steps: step_results,
+        };
+    }
+
     for (i, step) in request.steps.iter().enumerate() {
         let step_start = Instant::now();
 
         if let Some(condition) = &step.when {
             if !evaluate_condition(condition, &pipeline_context) {
-                step_results.push(StepResult {
+                let skipped = StepResult {
                     index: i,
                     alias: step.alias.clone(),
                     command: step.command.clone(),
@@ -1357,7 +1408,9 @@ pub async fn execute_pipeline(
                     error: None,
                     execution_time_ms: 0,
                     metadata: None,
-                });
+                };
+                step_results.push(skipped.clone());
+                pipeline_context.steps.push(skipped);
                 continue;
             }
         }
@@ -1374,7 +1427,68 @@ pub async fn execute_pipeline(
             serde_json::json!(format!("{pipeline_id}-step-{i}")),
         );
 
-        let result = execute(step.command.clone(), resolved_input, step_context).await;
+        let execution = execute(step.command.clone(), resolved_input, step_context);
+        let result = if let Some(timeout_ms) = options.timeout_ms {
+            let elapsed_ms = start_time.elapsed().as_millis() as u64;
+            let remaining_ms = timeout_ms.saturating_sub(elapsed_ms);
+            if remaining_ms == 0 {
+                Err(())
+            } else {
+                #[cfg(feature = "native")]
+                {
+                    tokio::time::timeout(std::time::Duration::from_millis(remaining_ms), execution)
+                        .await
+                        .map_err(|_| ())
+                }
+                #[cfg(not(feature = "native"))]
+                {
+                    Ok(execution.await)
+                }
+            }
+        } else {
+            Ok(execution.await)
+        };
+        let result = match result {
+            Ok(result) => result,
+            Err(()) => {
+                let timeout_error = CommandError {
+                    code: "PIPELINE_TIMEOUT".to_string(),
+                    message: format!(
+                        "Pipeline timeout exceeded ({:?}ms)",
+                        options.timeout_ms.unwrap_or(0)
+                    ),
+                    suggestion: Some(
+                        "Increase timeoutMs or reduce the number of pipeline steps".to_string(),
+                    ),
+                    retryable: Some(true),
+                    details: None,
+                    cause: None,
+                };
+                step_results.push(StepResult {
+                    index: i,
+                    alias: step.alias.clone(),
+                    command: step.command.clone(),
+                    status: StepStatus::Failure,
+                    data: None,
+                    error: Some(timeout_error.clone()),
+                    execution_time_ms: step_start.elapsed().as_millis() as u64,
+                    metadata: None,
+                });
+                for (j, remaining_step) in request.steps.iter().enumerate().skip(i + 1) {
+                    step_results.push(StepResult {
+                        index: j,
+                        alias: remaining_step.alias.clone(),
+                        command: remaining_step.command.clone(),
+                        status: StepStatus::Skipped,
+                        data: None,
+                        error: Some(timeout_error.clone()),
+                        execution_time_ms: 0,
+                        metadata: None,
+                    });
+                }
+                break;
+            }
+        };
         let step_execution_time_ms = step_start.elapsed().as_millis() as u64;
 
         if result.success {
@@ -1410,6 +1524,10 @@ pub async fn execute_pipeline(
             };
             step_results.push(step_result);
 
+            pipeline_context
+                .steps
+                .push(step_results.last().cloned().expect("step was added"));
+
             if options.continue_on_failure != Some(true) {
                 for (j, remaining_step) in request.steps.iter().enumerate().skip(i + 1) {
                     step_results.push(StepResult {
@@ -1419,34 +1537,6 @@ pub async fn execute_pipeline(
                         status: StepStatus::Skipped,
                         data: None,
                         error: None,
-                        execution_time_ms: 0,
-                        metadata: None,
-                    });
-                }
-                break;
-            }
-        }
-
-        if let Some(timeout_ms) = options.timeout_ms {
-            if start_time.elapsed().as_millis() as u64 > timeout_ms {
-                for (j, remaining_step) in request.steps.iter().enumerate().skip(i + 1) {
-                    step_results.push(StepResult {
-                        index: j,
-                        alias: remaining_step.alias.clone(),
-                        command: remaining_step.command.clone(),
-                        status: StepStatus::Skipped,
-                        data: None,
-                        error: Some(CommandError {
-                            code: "PIPELINE_TIMEOUT".to_string(),
-                            message: format!("Pipeline timeout exceeded ({timeout_ms}ms)"),
-                            suggestion: Some(
-                                "Increase timeoutMs or reduce the number of pipeline steps"
-                                    .to_string(),
-                            ),
-                            retryable: Some(true),
-                            details: None,
-                            cause: None,
-                        }),
                         execution_time_ms: 0,
                         metadata: None,
                     });
@@ -2038,5 +2128,86 @@ mod tests {
         assert_eq!(result.steps[0].status, StepStatus::Success);
         assert_eq!(result.steps[1].status, StepStatus::Failure);
         assert_eq!(result.steps[2].status, StepStatus::Skipped);
+    }
+
+    #[tokio::test]
+    async fn test_parallel_pipeline_is_rejected_before_execution() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor_calls = Arc::clone(&calls);
+        let executor: CommandExecutor = Arc::new(move |_name, _input, _ctx| {
+            executor_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { success(serde_json::json!({})) })
+        });
+        let result = execute_pipeline(
+            &PipelineRequest {
+                id: None,
+                steps: vec![PipelineStep {
+                    command: "step-a".to_string(),
+                    input: None,
+                    alias: None,
+                    when: None,
+                    stream: None,
+                }],
+                options: Some(PipelineOptions {
+                    parallel: Some(true),
+                    ..Default::default()
+                }),
+            },
+            &executor,
+            None,
+        )
+        .await;
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            result.steps[0].error.as_ref().unwrap().code,
+            "UNSUPPORTED_OPTION"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_timeout_interrupts_current_step() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor_calls = Arc::clone(&calls);
+        let executor: CommandExecutor = Arc::new(move |_name, _input, _ctx| {
+            executor_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                success(serde_json::json!({}))
+            })
+        });
+        let result = execute_pipeline(
+            &PipelineRequest {
+                id: None,
+                steps: vec![PipelineStep {
+                    command: "slow-step".to_string(),
+                    input: None,
+                    alias: None,
+                    when: None,
+                    stream: None,
+                }],
+                options: Some(PipelineOptions {
+                    timeout_ms: Some(5),
+                    ..Default::default()
+                }),
+            },
+            &executor,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            result.steps[0].error.as_ref().unwrap().code,
+            if cfg!(feature = "native") {
+                "PIPELINE_TIMEOUT"
+            } else {
+                "UNSUPPORTED_OPTION"
+            }
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            usize::from(cfg!(feature = "native"))
+        );
+        assert!(result.metadata.execution_time_ms < 100);
     }
 }

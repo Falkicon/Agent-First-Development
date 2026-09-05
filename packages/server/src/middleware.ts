@@ -1,3 +1,4 @@
+// afd-override: max-lines=850 — Cohesive public middleware factories and their option types.
 /**
  * @fileoverview Command middleware utilities
  *
@@ -141,7 +142,7 @@ export function defaultMiddleware(options: DefaultMiddlewareOptions = {}): Comma
  * Options for logging middleware.
  */
 export interface LoggingOptions {
-	/** Log function (defaults to console.log) */
+	/** Log function (defaults to console.error) */
 	log?: (message: string, data?: unknown) => void;
 
 	/** Include input in logs (may contain sensitive data) */
@@ -165,7 +166,7 @@ export interface LoggingOptions {
  * ```
  */
 export function createLoggingMiddleware(options: LoggingOptions = {}): CommandMiddleware {
-	const { log = console.log, logInput = false, logResult = false } = options;
+	const { log = console.error, logInput = false, logResult = false } = options;
 
 	return async (commandName, input, context, next) => {
 		const startTime = Date.now();
@@ -421,6 +422,9 @@ export interface RateLimitOptions {
 	/** Window size in ms */
 	windowMs: number;
 
+	/** Maximum distinct active clients retained (default: 10000). New keys are rejected at capacity. */
+	maxKeys?: number;
+
 	/** Key function to identify clients (defaults to 'global') */
 	keyFn?: (context: CommandContext) => string;
 }
@@ -443,14 +447,33 @@ export interface RateLimitOptions {
  * ```
  */
 export function createRateLimitMiddleware(options: RateLimitOptions): CommandMiddleware {
-	const { maxRequests, windowMs, keyFn = () => 'global' } = options;
+	const { maxRequests, windowMs, maxKeys = 10_000, keyFn = () => 'global' } = options;
+	if (!Number.isInteger(maxKeys) || maxKeys <= 0 || !Number.isFinite(windowMs) || windowMs <= 0) {
+		throw new Error('Rate limit maxKeys and windowMs must be positive');
+	}
 	const windows = new Map<string, { count: number; resetAt: number }>();
 
 	return async (_commandName, _input, context, next) => {
 		const key = keyFn(context);
 		const now = Date.now();
 
+		// Insertion order follows expiry order because every window has the same duration.
+		for (const [expiredKey, entry] of windows) {
+			if (entry.resetAt > now) break;
+			windows.delete(expiredKey);
+		}
 		let window = windows.get(key);
+		if (!window && windows.size >= maxKeys) {
+			return {
+				success: false,
+				error: {
+					code: 'RATE_LIMITED',
+					message: 'Rate limit client capacity reached',
+					retryable: true,
+					suggestion: 'Retry after the current rate limit window expires',
+				},
+			};
+		}
 		if (!window || now >= window.resetAt) {
 			window = { count: 0, resetAt: now + windowMs };
 			windows.set(key, window);
@@ -617,7 +640,7 @@ export function createTelemetryMiddleware(options: TelemetryOptions): CommandMid
 export interface ConsoleTelemetrySinkOptions {
 	/**
 	 * Log function to use.
-	 * Default: console.log
+	 * Default: console.error
 	 */
 	log?: (message: string) => void;
 
@@ -658,7 +681,7 @@ export class ConsoleTelemetrySink implements TelemetrySink {
 	private readonly prefix: string;
 
 	constructor(options: ConsoleTelemetrySinkOptions = {}) {
-		this.log = options.log ?? console.log;
+		this.log = options.log ?? console.error;
 		this.json = options.json ?? false;
 		this.prefix = options.prefix ?? '[Telemetry]';
 	}
@@ -697,20 +720,18 @@ function sleep(ms: number): Promise<void> {
  */
 export function composeMiddleware(...middlewares: CommandMiddleware[]): CommandMiddleware {
 	return async (commandName, input, context, next) => {
-		let index = 0;
-
-		const dispatch = async (): Promise<CommandResult> => {
+		const dispatch = async (index: number): Promise<CommandResult> => {
 			if (index >= middlewares.length) {
 				return next();
 			}
 
-			const middleware = middlewares[index++];
+			const middleware = middlewares[index];
 			if (!middleware) {
 				return next();
 			}
-			return middleware(commandName, input, context, dispatch);
+			return middleware(commandName, input, context, () => dispatch(index + 1));
 		};
 
-		return dispatch();
+		return dispatch(0);
 	};
 }

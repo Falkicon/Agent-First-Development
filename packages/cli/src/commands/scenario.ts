@@ -19,6 +19,7 @@ import type { Command } from 'commander';
 import { glob } from 'glob';
 import ora from 'ora';
 import { printError, printInfo, printSuccess, printWarning } from '../output.js';
+import { CLI_VERSION } from '../version.js';
 
 /**
  * Register the scenario command.
@@ -203,7 +204,7 @@ export function registerScenarioCommand(program: Command): void {
 							nodeVersion: process.version,
 							platform: process.platform,
 							cwd,
-							afdVersion: '0.1.0',
+							afdVersion: CLI_VERSION,
 						},
 					};
 					reporter.reportTestReport(report);

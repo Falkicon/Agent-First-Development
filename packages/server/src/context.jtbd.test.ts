@@ -28,6 +28,7 @@ const contexts: ContextConfig[] = [
 ];
 
 const docCreate = defineCommand({
+	expose: { mcp: true },
 	name: 'doc-create',
 	description: 'Create a new document in the editor',
 	input: z.object({ title: z.string() }),
@@ -38,6 +39,7 @@ const docCreate = defineCommand({
 });
 
 const docFormat = defineCommand({
+	expose: { mcp: true },
 	name: 'doc-format',
 	description: 'Format the current document selection',
 	input: z.object({ style: z.string() }),
@@ -48,6 +50,7 @@ const docFormat = defineCommand({
 });
 
 const printPreview = defineCommand({
+	expose: { mcp: true },
 	name: 'print-preview',
 	description: 'Preview the document for printing',
 	input: z.object({ pageSize: z.string().default('A4') }),
@@ -58,6 +61,7 @@ const printPreview = defineCommand({
 });
 
 const printSend = defineCommand({
+	expose: { mcp: true },
 	name: 'print-send',
 	description: 'Send the document to a printer',
 	input: z.object({ printer: z.string() }),
@@ -68,6 +72,7 @@ const printSend = defineCommand({
 });
 
 const appHelp = defineCommand({
+	expose: { mcp: true },
 	name: 'app-help',
 	description: 'Show general help for the application',
 	input: z.object({}),

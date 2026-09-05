@@ -10,6 +10,10 @@ import Conf from 'conf';
 export interface StoredConfig {
 	/** Last connected server URL */
 	serverUrl?: string;
+	/** Transport selected by the last successful connection */
+	transport?: 'sse' | 'http';
+	/** Whether the client should reconnect automatically */
+	autoReconnect?: boolean;
 	/** Default timeout in ms */
 	timeout?: number;
 	/** Output format */
@@ -36,6 +40,8 @@ const store = new Conf<StoredConfig>({
 export function getConfig(): StoredConfig {
 	return {
 		serverUrl: store.get('serverUrl'),
+		transport: store.get('transport'),
+		autoReconnect: store.get('autoReconnect'),
 		timeout: store.get('timeout'),
 		format: store.get('format'),
 		debug: store.get('debug'),
@@ -47,6 +53,11 @@ export function getConfig(): StoredConfig {
  */
 export function setConfig<K extends keyof StoredConfig>(key: K, value: StoredConfig[K]): void {
 	store.set(key, value);
+}
+
+/** Remove a stored configuration value. */
+export function deleteConfig(key: keyof StoredConfig): void {
+	store.delete(key);
 }
 
 /**

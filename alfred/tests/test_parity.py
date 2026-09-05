@@ -6,14 +6,13 @@ from pathlib import Path
 import pytest
 
 from alfred.commands.parity import (
-    alfred_parity,
-    parse_typescript_exports,
-    parse_python_exports,
-    parse_rust_exports,
     _camel_to_snake,
     _normalize,
+    alfred_parity,
+    parse_python_exports,
+    parse_rust_exports,
+    parse_typescript_exports,
 )
-
 
 # ─── Unit tests for parsing ──────────────────────────────────────────────────
 

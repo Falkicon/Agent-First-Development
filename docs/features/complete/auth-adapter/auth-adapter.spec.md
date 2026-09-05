@@ -24,14 +24,17 @@ graph TD
     subgraph "Core Package (@lushly-dev/afd-auth)"
         E[AuthAdapter Interface]
         M[createAuthMiddleware]
-        CMD[AFD Commands]
-        F[ConvexAuthAdapter]
         G[BetterAuthAdapter]
         H[MockAuthAdapter]
     end
 
+    subgraph "Optional: AFD Commands (@lushly-dev/afd-auth/commands)"
+        CMD[createAuthCommands]
+    end
+
     subgraph "Optional: React Hooks (@lushly-dev/afd-auth/react)"
         R[createAuthHooks]
+        F[useConvexAuthAdapter]
         R --> C[useAuth]
         R --> D[useSession]
         R --> U[useUser]
@@ -61,17 +64,29 @@ graph TD
 
 ```
 packages/auth/src/
-├── index.ts           # Public exports
+├── index.ts           # Core public exports (no React/server/zod imports)
 ├── types.ts           # AuthAdapter, AuthSessionState
 ├── errors.ts          # AuthAdapterError, error codes
 ├── session-sync.ts    # Multi-tab synchronization
-├── commands.ts        # AFD command wrappers
+├── commands.ts        # Optional sub-path export (@lushly-dev/afd-auth/commands)
 ├── middleware.ts      # createAuthMiddleware
 ├── adapters/
-│   ├── convex.ts      # useConvexAuthAdapter()
+│   ├── convex.ts      # useConvexAuthAdapter() (re-exported from /react)
 │   ├── better-auth.ts # useBetterAuthAdapter()
 │   └── mock.ts        # MockAuthAdapter (testing)
 └── react.ts           # Optional sub-path export (@lushly-dev/afd-auth/react)
+```
+
+The optional integrations use explicit import paths so the core entrypoint can
+load with only `@lushly-dev/afd-core` installed:
+
+```typescript
+// Before
+import { createAuthCommands, useConvexAuthAdapter } from '@lushly-dev/afd-auth';
+
+// After
+import { createAuthCommands } from '@lushly-dev/afd-auth/commands';
+import { useConvexAuthAdapter } from '@lushly-dev/afd-auth/react';
 ```
 
 The main package has **zero React dependency**. React is a thin optional sub-path export via package.json `exports`:
@@ -80,7 +95,8 @@ The main package has **zero React dependency**. React is a thin optional sub-pat
 {
   "exports": {
     ".": "./dist/index.js",
-    "./react": "./dist/react.js"
+    "./react": "./dist/react.js",
+    "./commands": "./dist/commands.js"
   },
   "peerDependencies": {
     "react": "^18.0.0 || ^19.0.0"

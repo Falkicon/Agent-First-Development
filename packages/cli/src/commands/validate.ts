@@ -2,7 +2,9 @@
  * @fileoverview Validate command
  */
 
+import type { McpTool } from '@lushly-dev/afd-core';
 import {
+	type SurfaceCommand,
 	type SurfaceFinding,
 	type ValidationResult,
 	validateCommandSurface,
@@ -11,8 +13,8 @@ import {
 import chalk from 'chalk';
 import type { Command } from 'commander';
 import ora from 'ora';
+import { ensureConnected } from '../connection.js';
 import { printError, printInfo, printSuccess, printWarning } from '../output.js';
-import { getClient } from './connect.js';
 
 /**
  * Register the validate command.
@@ -70,10 +72,24 @@ interface SurfaceOptions {
 	suppress: string[];
 }
 
-async function runSurfaceValidation(options: SurfaceOptions): Promise<void> {
-	const client = getClient();
+/** Preserve AFD metadata advertised by a remote MCP tools/list response. */
+export function mapToolsToSurfaceCommands(tools: McpTool[]): SurfaceCommand[] {
+	return tools.map((tool) => ({
+		name: tool.name,
+		description: tool.description ?? '',
+		category: tool._meta?.category,
+		jsonSchema: tool.inputSchema as SurfaceCommand['jsonSchema'],
+		requires: tool._meta?.requires,
+		examples: tool._meta?.examples,
+		outputJsonSchema: tool._meta?.outputSchema as SurfaceCommand['outputJsonSchema'],
+		contexts: tool._meta?.contexts,
+	}));
+}
 
-	if (!client || !client.isConnected()) {
+async function runSurfaceValidation(options: SurfaceOptions): Promise<void> {
+	const client = await ensureConnected();
+
+	if (!client?.isConnected()) {
 		printError('Not connected. Run "afd connect <url>" first.');
 		process.exit(1);
 	}
@@ -85,17 +101,15 @@ async function runSurfaceValidation(options: SurfaceOptions): Promise<void> {
 		spinner.text = `Analyzing ${tools.length} commands...`;
 
 		// Map MCP tool definitions to SurfaceCommand shape
-		const commands = tools.map((tool) => ({
-			name: tool.name,
-			description: tool.description ?? '',
-			jsonSchema: tool.inputSchema as Record<string, unknown>,
-		}));
+		const commands = mapToolsToSurfaceCommands(tools);
+		const configuredContexts = [...new Set(commands.flatMap((command) => command.contexts ?? []))];
 
 		const result = validateCommandSurface(commands, {
 			similarityThreshold: Number.parseFloat(options.similarityThreshold),
 			strict: options.strict,
 			skipCategories: options.skipCategory,
 			suppressions: options.suppress,
+			configuredContexts,
 		});
 
 		spinner.stop();
@@ -182,9 +196,9 @@ interface PerCommandOptions {
 }
 
 async function runPerCommandValidation(options: PerCommandOptions): Promise<void> {
-	const client = getClient();
+	const client = await ensureConnected();
 
-	if (!client || !client.isConnected()) {
+	if (!client?.isConnected()) {
 		printError('Not connected. Run "afd connect <url>" first.');
 		process.exit(1);
 	}

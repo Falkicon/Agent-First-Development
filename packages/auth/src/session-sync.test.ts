@@ -147,6 +147,89 @@ describe('SessionSync', () => {
 		sync.dispose();
 	});
 
+	it('only the owning instance can release a refresh lock', () => {
+		const owner = new SessionSync();
+		const other = new SessionSync();
+
+		expect(owner.acquireRefreshLock()).toBe(true);
+		expect(other.acquireRefreshLock()).toBe(false);
+		other.releaseRefreshLock();
+		expect(mockStorage.has('afd-auth-refresh-lock')).toBe(true);
+
+		owner.releaseRefreshLock();
+		expect(mockStorage.has('afd-auth-refresh-lock')).toBe(false);
+		owner.dispose();
+		other.dispose();
+	});
+
+	it('does not let an expired owner release a successor lock', () => {
+		const oldOwner = new SessionSync({ lockTimeoutMs: 10_000 });
+		const newOwner = new SessionSync({ lockTimeoutMs: 10_000 });
+
+		expect(oldOwner.acquireRefreshLock()).toBe(true);
+		const oldLock = JSON.parse(mockStorage.get('afd-auth-refresh-lock') ?? '{}') as {
+			ownerId: string;
+			lockId: string;
+		};
+		mockStorage.set(
+			'afd-auth-refresh-lock',
+			JSON.stringify({ ...oldLock, timestamp: Date.now() - 15_000 })
+		);
+
+		expect(newOwner.acquireRefreshLock()).toBe(true);
+		const successorLock = mockStorage.get('afd-auth-refresh-lock');
+		oldOwner.releaseRefreshLock();
+		expect(mockStorage.get('afd-auth-refresh-lock')).toBe(successorLock);
+
+		newOwner.releaseRefreshLock();
+		oldOwner.dispose();
+		newOwner.dispose();
+	});
+
+	it('continues without coordination when storage access is denied', () => {
+		mockLocalStorage.getItem.mockImplementation(() => {
+			throw new Error('storage denied');
+		});
+		mockLocalStorage.setItem.mockImplementation(() => {
+			throw new Error('storage denied');
+		});
+		const sync = new SessionSync();
+
+		expect(sync.acquireRefreshLock()).toBe(true);
+		expect(() => sync.releaseRefreshLock()).not.toThrow();
+		sync.dispose();
+	});
+
+	it('does not access storage when the localStorage accessor is denied', () => {
+		const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+		Object.defineProperty(globalThis, 'localStorage', {
+			configurable: true,
+			get: () => {
+				throw new Error('storage denied');
+			},
+		});
+
+		try {
+			const sync = new SessionSync();
+			expect(sync.acquireRefreshLock()).toBe(true);
+			expect(() => sync.releaseRefreshLock()).not.toThrow();
+			sync.dispose();
+		} finally {
+			if (descriptor) {
+				Object.defineProperty(globalThis, 'localStorage', descriptor);
+			} else {
+				Reflect.deleteProperty(globalThis, 'localStorage');
+			}
+		}
+	});
+
+	it('does not acquire a lock after disposal', () => {
+		const sync = new SessionSync();
+		sync.dispose();
+
+		expect(sync.acquireRefreshLock()).toBe(false);
+	});
+
 	it('closes BroadcastChannel on dispose', () => {
 		const sync = new SessionSync();
 		const channel = getChannel();

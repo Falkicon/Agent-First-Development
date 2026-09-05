@@ -333,8 +333,8 @@ describe('ConsoleTelemetrySink', () => {
 		expect(logs[0]).not.toContain('[Telemetry]');
 	});
 
-	it('uses default console.log when no log function provided', () => {
-		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+	it('uses default console.error when no log function provided', () => {
+		const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
 		const sink = new ConsoleTelemetrySink();
 		sink.record({
@@ -574,7 +574,7 @@ describe('defaultMiddleware integration', () => {
 		expect(result.success).toBe(true);
 		expect(result.metadata?.traceId).toBeDefined();
 		expect(typeof result.metadata?.traceId).toBe('string');
-		expect((result.metadata?.traceId as string).length).toBeGreaterThan(0);
+		expect(result.metadata?.traceId).toEqual(expect.stringMatching(/.+/));
 
 		// Logging middleware emitted output
 		expect(logs.length).toBeGreaterThanOrEqual(2); // at least "Executing" + "Completed"

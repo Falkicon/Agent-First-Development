@@ -15,6 +15,7 @@ import { registerShellCommand } from './commands/shell.js';
 import { registerStreamCommand } from './commands/stream.js';
 import { registerToolsCommand } from './commands/tools.js';
 import { registerValidateCommand } from './commands/validate.js';
+import { CLI_VERSION } from './version.js';
 
 /**
  * Create the CLI program.
@@ -27,7 +28,7 @@ export function createCli(): Command {
 		.description(
 			'Agent-First Development CLI - Build software where AI agents are first-class users'
 		)
-		.version('0.1.0');
+		.version(CLI_VERSION);
 
 	// Register commands
 	registerConnectCommand(program);

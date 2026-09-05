@@ -1,7 +1,23 @@
-import { describe, expect, it, vi } from 'vitest';
+import { chmodSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import type { Scenario, Step } from '../types/scenario.js';
 import type { CommandHandler } from './executor.js';
-import { InProcessExecutor, validateScenario } from './executor.js';
+import {
+	createExecutor,
+	InProcessExecutor,
+	ScenarioExecutor,
+	validateScenario,
+} from './executor.js';
+
+const cliFixturePath = join(
+	dirname(fileURLToPath(import.meta.url)),
+	'fixtures',
+	'fake-afd-cli.mjs'
+);
+
+beforeAll(() => chmodSync(cliFixturePath, 0o755));
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // Test Fixtures
@@ -48,6 +64,104 @@ function makeScenario(overrides?: Partial<Scenario>): Scenario {
 		...overrides,
 	};
 }
+
+describe('ScenarioExecutor', () => {
+	const config = {
+		cliPath: cliFixturePath,
+		serverUrl: 'http://test.example/mcp',
+	} as const;
+
+	it('executes CLI steps and invokes lifecycle callbacks', async () => {
+		const onScenarioStart = vi.fn();
+		const onStepComplete = vi.fn();
+		const onScenarioComplete = vi.fn();
+		const executor = new ScenarioExecutor({
+			...config,
+			onScenarioStart,
+			onStepComplete,
+			onScenarioComplete,
+		});
+
+		const result = await executor.execute(makeScenario());
+
+		expect(result).toMatchObject({ outcome: 'pass', passedSteps: 1, failedSteps: 0 });
+		expect(onScenarioStart).toHaveBeenCalledOnce();
+		expect(onStepComplete).toHaveBeenCalledOnce();
+		expect(onScenarioComplete).toHaveBeenCalledWith(result);
+	});
+
+	it('formats multiple expectation mismatches for diagnosis', async () => {
+		const executor = new ScenarioExecutor(config);
+		const result = await executor.execute(
+			makeScenario({
+				steps: [
+					{
+						command: 'test-cmd',
+						input: { title: 'actual' },
+						expect: { success: true, data: { title: 'expected', missing: { exists: true } } },
+					},
+				],
+			})
+		);
+
+		expect(result.outcome).toBe('fail');
+		expect(result.stepResults[0]?.error?.message).toContain('2 assertions failed');
+		expect(result.stepResults[0]?.error?.message).toContain('data.title');
+	});
+
+	it('skips later steps after a malformed CLI response', async () => {
+		const onStepComplete = vi.fn();
+		const executor = new ScenarioExecutor({ ...config, onStepComplete });
+		const result = await executor.execute(
+			makeScenario({
+				steps: [
+					{ command: 'malformed', expect: { success: true } },
+					{ command: 'test-cmd', expect: { success: true } },
+				],
+			})
+		);
+
+		expect(result).toMatchObject({ outcome: 'fail', failedSteps: 1, skippedSteps: 1 });
+		expect(result.stepResults[0]?.error?.type).toBe('parse_error');
+		expect(result.stepResults[1]?.skippedReason).toBe('Previous step failed');
+		expect(onStepComplete).toHaveBeenCalledTimes(2);
+	});
+
+	it('can be reconfigured to continue and execute multiple scenarios', async () => {
+		const completed = vi.fn();
+		const executor = createExecutor(config);
+		executor.configure({ stopOnFailure: false, onScenarioComplete: completed });
+		const scenario = makeScenario({
+			steps: [
+				{ command: 'fail-command', input: { id: 'missing' }, expect: { success: true } },
+				{ command: 'test-cmd', input: { id: 'next' }, expect: { success: true } },
+			],
+		});
+
+		const results = await executor.executeAll([scenario, makeScenario()]);
+
+		expect(results[0]?.stepResults.map((step) => step.outcome)).toEqual(['fail', 'pass']);
+		expect(results.map((result) => result.outcome)).toEqual(['partial', 'pass']);
+		expect(completed).toHaveBeenCalledTimes(2);
+	});
+
+	it('contains unexpected thrown values as step errors', async () => {
+		const executor = new ScenarioExecutor(config);
+		const internal = executor as unknown as {
+			cli: { execute: () => Promise<never> };
+		};
+		internal.cli.execute = async () => {
+			throw 'transport crashed';
+		};
+
+		const result = await executor.execute(makeScenario());
+
+		expect(result.stepResults[0]?.error).toMatchObject({
+			type: 'unknown',
+			message: 'transport crashed',
+		});
+	});
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // InProcessExecutor

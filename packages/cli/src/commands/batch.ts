@@ -4,45 +4,12 @@
  * Execute multiple commands in a single request with partial success semantics.
  */
 
-import { createClient } from '@lushly-dev/afd-client';
 import type { BatchCommand, BatchOptions, BatchResult } from '@lushly-dev/afd-core';
 import chalk from 'chalk';
 import type { Command } from 'commander';
 import ora from 'ora';
-import { getConfig } from '../config.js';
+import { ensureConnected } from '../connection.js';
 import { type OutputFormat, printError } from '../output.js';
-import { getClient, setClient } from './connect.js';
-
-/**
- * Ensure we have a connected client, auto-connecting if needed.
- */
-async function ensureConnected() {
-	let client = getClient();
-
-	if (client?.isConnected()) {
-		return client;
-	}
-
-	// Try to auto-connect using saved URL
-	const config = getConfig();
-	if (!config.serverUrl) {
-		return null;
-	}
-
-	client = createClient({
-		url: config.serverUrl,
-		transport: 'http',
-		timeout: config.timeout ?? 30000,
-	});
-
-	try {
-		await client.connect();
-		setClient(client);
-		return client;
-	} catch {
-		return null;
-	}
-}
 
 /**
  * Register the batch command.

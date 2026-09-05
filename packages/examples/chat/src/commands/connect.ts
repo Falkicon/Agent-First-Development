@@ -18,6 +18,7 @@ const inputSchema = z.object({
 export const chatConnect = defineCommand<typeof inputSchema, HandoffResult>({
 	name: 'chat-connect',
 	category: 'chat',
+	expose: { mcp: true },
 	description: 'Connect to a chat room for real-time messaging',
 	tags: ['chat', 'handoff', 'handoff:websocket'],
 	mutation: true,
